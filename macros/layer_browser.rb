@@ -469,21 +469,56 @@ module LayerBrowser
       file_path = RBA::FileDialog.get_open_file_name(
         "Load PDK Layer Map",
         ".",
-        "Layer Properties (*.lyp);;All files (*)"
+        "Layer Properties (*.lyp);;Layer Map (*.map);;All files (*)"
       )
       
       return if file_path.nil? || file_path.empty?
       
       begin
-        parse_lyp_file(file_path)
+        if file_path.end_with?(".map")
+          parse_map_file(file_path)
+        else
+          parse_lyp_file(file_path)
+        end
         @lyp_file = file_path
-        @lyp_label.text = "Loaded: #{File.basename(file_path)}"
+        @lyp_label.text = "Loaded: #{File.basename(file_path)} (#{@layer_map.length} layers)"
         @lyp_label.setStyleSheet("color: green; font-weight: bold;")
         refresh_layers
         update_display
         @status_label.text = "Loaded #{@layer_map.length} layer definitions from #{File.basename(file_path)}"
       rescue => e
-        RBA::MessageBox.critical("Load Error", "Failed to load layer map: #{e.message}", RBA::MessageBox::Ok)
+        RBA::MessageBox.critical("Load Error", "Failed to load layer map: #{e.message}\n\n#{e.backtrace.first(3).join("\n")}", RBA::MessageBox::Ok)
+      end
+    end
+
+    def parse_map_file(file_path)
+      # Parse .map file format (SKY130 style):
+      # li1     NET,SPNET,VIA            67  20
+      # met1    LEFPIN,NET,SPNET,PIN,VIA 68  20
+      @layer_map = {}
+      
+      File.readlines(file_path).each do |line|
+        line = line.strip
+        next if line.empty? || line.start_with?("#")
+        
+        # Format: name  purpose  layer  datatype
+        parts = line.split(/\s+/)
+        next if parts.length < 4
+        
+        layer_name = parts[0]
+        layer_num = parts[-2].to_i
+        datatype = parts[-1].to_i
+        
+        key = "#{layer_num}/#{datatype}"
+        
+        # Only add if not already present (first occurrence wins)
+        unless @layer_map.key?(key)
+          @layer_map[key] = {
+            :name => layer_name,
+            :layer => layer_num,
+            :datatype => datatype
+          }
+        end
       end
     end
 
@@ -536,7 +571,7 @@ module LayerBrowser
     end
 
     def auto_detect_layer_map
-      # Try to find .lyp file in common locations
+      # Try to find .lyp or .map file in common locations
       search_paths = []
       
       # Check if there's a .lyp file in the same directory as the GDS
@@ -553,41 +588,60 @@ module LayerBrowser
       # Check PDK_ROOT environment variable
       pdk_root = ENV['PDK_ROOT']
       if pdk_root && !pdk_root.empty?
+        search_paths << File.join(pdk_root, "sky130A", "libs.tech", "klayout", "tech")
         search_paths << File.join(pdk_root, "sky130A", "libs.tech", "klayout")
+        search_paths << File.join(pdk_root, "gf180mcuC", "libs.tech", "klayout", "tech")
         search_paths << File.join(pdk_root, "gf180mcuC", "libs.tech", "klayout")
       end
       
-      # Search for .lyp files
-      found_lyp = nil
+      # Also check common volare locations
+      home = ENV['HOME'] || ENV['USERPROFILE'] || "~"
+      search_paths << File.join(home, ".volare", "volare", "sky130", "versions")
+      
+      # Search for .lyp and .map files
+      found_file = nil
       search_paths.each do |path|
         next unless File.directory?(path)
-        Dir.glob(File.join(path, "*.lyp")).each do |lyp|
-          found_lyp = lyp
+        
+        # First try .lyp files
+        Dir.glob(File.join(path, "**", "*.lyp")).each do |f|
+          found_file = f
           break
         end
-        break if found_lyp
+        break if found_file
+        
+        # Then try .map files
+        Dir.glob(File.join(path, "**", "*.map")).each do |f|
+          found_file = f
+          break
+        end
+        break if found_file
       end
       
-      if found_lyp
+      if found_file
         begin
-          parse_lyp_file(found_lyp)
-          @lyp_file = found_lyp
-          @lyp_label.text = "Auto-detected: #{File.basename(found_lyp)}"
+          if found_file.end_with?(".map")
+            parse_map_file(found_file)
+          else
+            parse_lyp_file(found_file)
+          end
+          @lyp_file = found_file
+          @lyp_label.text = "Auto: #{File.basename(found_file)} (#{@layer_map.length})"
           @lyp_label.setStyleSheet("color: green; font-weight: bold;")
           refresh_layers
           update_display
-          @status_label.text = "Auto-detected #{@layer_map.length} layers from #{File.basename(found_lyp)}"
+          @status_label.text = "Auto-detected #{@layer_map.length} layers from #{File.basename(found_file)}"
         rescue => e
           @status_label.text = "Auto-detect failed: #{e.message}"
         end
       else
-        @status_label.text = "No .lyp file found. Use 'Load Layer Map' to browse."
+        @status_label.text = "No layer map found. Use 'Load Layer Map' to browse."
         RBA::MessageBox.info("Auto-Detect", 
-          "No .lyp file found automatically.\n\n" +
-          "Please use 'Load Layer Map' to manually select a .lyp file.\n\n" +
+          "No .lyp or .map file found automatically.\n\n" +
+          "Please use 'Load Layer Map' to manually select a file.\n\n" +
           "Common locations:\n" +
           "- Same folder as your GDS file\n" +
-          "- PDK libs.tech/klayout folder\n" +
+          "- PDK libs.tech/klayout/tech folder\n" +
           "- OpenLane run results/signoff folder",
           RBA::MessageBox::Ok)
       end
