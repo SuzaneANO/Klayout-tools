@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8"?>
+<klayout-macro>
+ <description>Layer Browser DEBUG</description>
+ <version>4.0</version>
+ <category/>
+ <prolog/>
+ <epilog/>
+ <doc/>
+ <autorun>false</autorun>
+ <autorun-early>false</autorun-early>
+ <priority>0</priority>
+ <shortcut>Ctrl+Shift+D</shortcut>
+ <show-in-menu>true</show-in-menu>
+ <group-name/>
+ <menu-path>tools_menu.end</menu-path>
+ <interpreter>ruby</interpreter>
+ <dsl-interpreter-name/>
+ <text># Layer Browser DEBUG - Shows every step
+
+app = RBA::Application.instance
+mw = app.main_window
+
+# Step 1: Get file
+path = RBA::FileDialog.get_open_file_name(
+  "Select sky130A.tech or .lyp file", 
+  ".", 
+  "Tech File (*.tech);;Layer Properties (*.lyp);;All (*)"
+)
+
+if path.nil? || path.empty?
+  RBA::MessageBox.info("Cancelled", "No file selected", RBA::MessageBox::Ok)
+else
+  RBA::MessageBox.info("Step 1", "Selected file:\n#{path}\n\nFile exists: #{File.exist?(path)}", RBA::MessageBox::Ok)
+  
+  begin
+    # Step 2: Read file
+    content = File.read(path)
+    RBA::MessageBox.info("Step 2", "File size: #{content.length} bytes\n\nFirst 200 chars:\n#{content[0,200]}", RBA::MessageBox::Ok)
+    
+    # Step 3: Parse based on extension
+    layer_map = {}
+    
+    if path.downcase.end_with?(".tech")
+      # Find cifoutput section
+      cif_start = content.index('cifoutput')
+      RBA::MessageBox.info("Step 3a", "Looking for 'cifoutput'...\n\nFound at position: #{cif_start || 'NOT FOUND'}", RBA::MessageBox::Ok)
+      
+      if cif_start
+        cif_section = content[cif_start..-1]
+        current_layer = nil
+        line_count = 0
+        
+        cif_section.each_line do |line|
+          line = line.strip
+          line_count += 1
+          
+          if line =~ /^layer\s+(\w+)/
+            current_layer = $1
+          elsif line =~ /^calma\s+(\d+)\s+(\d+)/ &amp;&amp; current_layer
+            key = "#{$1}/#{$2}"
+            layer_map[key] = current_layer
+            current_layer = nil
+          end
+          
+          break if line_count > 2000  # Safety limit
+        end
+        
+        RBA::MessageBox.info("Step 3b", "Parsed #{line_count} lines\n\nFound #{layer_map.length} layer mappings", RBA::MessageBox::Ok)
+      end
+    else
+      # Parse .lyp
+      matches = content.scan(/&lt;properties&gt;(.*?)&lt;\/properties&gt;/m)
+      RBA::MessageBox.info("Step 3a", "Found #{matches.length} &lt;properties&gt; blocks", RBA::MessageBox::Ok)
+      
+      matches.each do |block|
+        text = block[0]
+        name_m = text.match(/&lt;name&gt;([^&lt;]+)&lt;\/name&gt;/)
+        src_m = text.match(/&lt;source&gt;([^&lt;]+)&lt;\/source&gt;/)
+        
+        if name_m &amp;&amp; src_m
+          name = name_m[1].strip
+          src = src_m[1].strip
+          
+          if src =~ /(\d+)\/(\d+)/
+            key = "#{$1}/#{$2}"
+            layer_name = name.split(" - ").first.strip
+            layer_map[key] = layer_name
+          end
+        end
+      end
+      
+      RBA::MessageBox.info("Step 3b", "Parsed #{layer_map.length} layer mappings", RBA::MessageBox::Ok)
+    end
+    
+    # Step 4: Show results
+    if layer_map.length > 0
+      samples = layer_map.first(10).map { |k,v| "  #{k} = #{v}" }.join("\n")
+      RBA::MessageBox.info("SUCCESS!", "Loaded #{layer_map.length} mappings!\n\nFirst 10:\n#{samples}\n\nKey layers:\n  66/20 = #{layer_map['66/20'] || 'N/A'}\n  67/20 = #{layer_map['67/20'] || 'N/A'}\n  68/20 = #{layer_map['68/20'] || 'N/A'}", RBA::MessageBox::Ok)
+    else
+      RBA::MessageBox.warning("No Mappings", "No layer mappings were found in the file.\n\nThis might be the wrong file format.", RBA::MessageBox::Ok)
+    end
+    
+  rescue => e
+    RBA::MessageBox.critical("ERROR", "#{e.class}: #{e.message}\n\n#{e.backtrace.first(10).join("\n")}", RBA::MessageBox::Ok)
+  end
+end
+</text>
+</klayout-macro>
