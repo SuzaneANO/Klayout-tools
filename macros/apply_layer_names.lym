@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<klayout-macro>
+ <description>Apply SKY130 Layer Names</description>
+ <version>1.0</version>
+ <category/>
+ <prolog/>
+ <epilog/>
+ <doc/>
+ <autorun>false</autorun>
+ <autorun-early>false</autorun-early>
+ <priority>0</priority>
+ <shortcut>Ctrl+Shift+N</shortcut>
+ <show-in-menu>true</show-in-menu>
+ <group-name/>
+ <menu-path>tools_menu.end</menu-path>
+ <interpreter>ruby</interpreter>
+ <dsl-interpreter-name/>
+ <text># Apply Layer Names from .tech or .lyp file directly to KLayout's layer panel
+
+app = RBA::Application.instance
+mw = app.main_window
+view = mw.current_view
+
+unless view
+  RBA::MessageBox.warning("No View", "Please open a layout first.", RBA::MessageBox::Ok)
+  return
+end
+
+# Get file
+path_val = RBA::FileDialog.get_open_file_name(
+  "Select Layer Map File", 
+  ".", 
+  "Tech File (*.tech);;Layer Properties (*.lyp);;All (*)"
+)
+
+path = path_val.to_s
+if path.nil? || path.empty?
+  RBA::MessageBox.info("Cancelled", "No file selected", RBA::MessageBox::Ok)
+  return
+end
+
+begin
+  content = File.read(path)
+  layer_map = {}
+  
+  if path.downcase.end_with?(".tech")
+    # Parse Magic .tech file
+    cif_start = content.index('cifoutput')
+    if cif_start
+      cif_section = content[cif_start..-1]
+      current_layer = nil
+      
+      cif_section.each_line do |line|
+        line = line.strip
+        if line =~ /^layer\s+(\w+)/
+          current_layer = $1
+        elsif line =~ /^calma\s+(\d+)\s+(\d+)/ &amp;&amp; current_layer
+          layer_num = $1.to_i
+          datatype = $2.to_i
+          layer_map[[layer_num, datatype]] = current_layer
+          current_layer = nil
+        end
+      end
+    end
+  else
+    # Parse .lyp file
+    content.scan(/&lt;properties&gt;(.*?)&lt;\/properties&gt;/m) do |block|
+      text = block[0]
+      name_m = text.match(/&lt;name&gt;([^&lt;]+)&lt;\/name&gt;/)
+      src_m = text.match(/&lt;source&gt;([^&lt;]+)&lt;\/source&gt;/)
+      
+      if name_m &amp;&amp; src_m
+        name = name_m[1].strip
+        src = src_m[1].strip
+        
+        if src =~ /(\d+)\/(\d+)/
+          layer_num = $1.to_i
+          datatype = $2.to_i
+          # Extract just the layer name (before " - ")
+          layer_name = name.split(" - ").first.strip
+          layer_map[[layer_num, datatype]] = layer_name
+        end
+      end
+    end
+  end
+  
+  if layer_map.empty?
+    RBA::MessageBox.warning("No Mappings", "No layer mappings found in file.", RBA::MessageBox::Ok)
+    return
+  end
+  
+  # Now apply the names to KLayout's layer panel
+  renamed_count = 0
+  
+  iter = view.begin_layers
+  while !iter.at_end?
+    lp = iter.current
+    if lp.valid?
+      layer_num = lp.source_layer
+      datatype = lp.source_datatype
+      
+      key = [layer_num, datatype]
+      if layer_map.key?(key)
+        new_name = layer_map[key]
+        # Set the layer name
+        lp.name = "#{new_name}"
+        renamed_count += 1
+      end
+    end
+    iter.next
+  end
+  
+  RBA::MessageBox.info("Done", "Applied #{renamed_count} layer names from #{layer_map.length} mappings.\n\nFile: #{File.basename(path)}", RBA::MessageBox::Ok)
+  
+rescue =&gt; e
+  RBA::MessageBox.critical("Error", "#{e.message}\n\n#{e.backtrace.first(5).join("\n")}", RBA::MessageBox::Ok)
+end
+</text>
+</klayout-macro>
