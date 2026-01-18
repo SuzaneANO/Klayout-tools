@@ -96,10 +96,10 @@ else:
                     iter.next()
                 
                 pya.MessageBox.info("Done", 
-                    f"Applied {renamed_count} layer names from {len(layer_map)} mappings.\n\nFile: {os.path.basename(path)}", 
+                    "Applied {} layer names from {} mappings.\n\nFile: {}".format(renamed_count, len(layer_map), os.path.basename(path)), 
                     pya.MessageBox.Ok)
         
         except Exception as e:
-            pya.MessageBox.critical("Error", f"{str(e)}", pya.MessageBox.Ok)
+            pya.MessageBox.critical("Error", str(e), pya.MessageBox.Ok)
 </text>
 </klayout-macro>
