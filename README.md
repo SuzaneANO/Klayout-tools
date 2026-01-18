@@ -19,40 +19,71 @@ A collection of useful KLayout macros and plugins for IC layout viewing and anal
 
 ## Installation
 
-### Windows (Easiest)
+### Windows
 
-**Option A: Double-click installer**
-1. Download or clone this repository
+#### Option A: Automatic Install (Recommended)
+1. Download or clone this repository:
+   ```
+   git clone https://github.com/SuzaneANO/Klayout-tools.git
+   ```
 2. Double-click `install.bat`
-3. Restart KLayout
+3. **Completely close KLayout** (check system tray)
+4. Restart KLayout
 
-**Option B: PowerShell**
+#### Option B: PowerShell Install
 ```powershell
+git clone https://github.com/SuzaneANO/Klayout-tools.git
+cd Klayout-tools
 .\install.ps1
 ```
 
-**Option C: Manual**
+#### Option C: Manual Install
 1. Open File Explorer
-2. Type `%APPDATA%\KLayout\macros` in the address bar (press Enter)
+2. Type `%APPDATA%\KLayout\macros` in the address bar and press Enter
 3. Create a new folder called `klayout-tools`
-4. Copy all `.rb` files from the `macros` folder into it
-5. Restart KLayout
+4. Copy ALL files from the `macros` folder (both `.rb` and `.lym` files) into it
+5. **Completely close KLayout** and restart it
 
-### Linux / macOS
+#### Troubleshooting Windows Installation
+If the new features don't appear after installation:
+1. Check if you have macros in `C:\Users\<YourName>\KLayout\macros\` - this is a different location!
+2. Delete or rename any old `.lym` files that might contain outdated code
+3. Make sure KLayout is completely closed (not in system tray) before restarting
+
+### Linux
 
 ```bash
+git clone https://github.com/SuzaneANO/Klayout-tools.git
+cd Klayout-tools
 ./install.sh
 ```
 
-Or manually copy to:
-- **Linux:** `~/.klayout/macros/klayout-tools/`
-- **macOS:** `~/Library/Application Support/KLayout/macros/klayout-tools/`
+Or manually copy to: `~/.klayout/macros/klayout-tools/`
+
+### macOS
+
+```bash
+git clone https://github.com/SuzaneANO/Klayout-tools.git
+cd Klayout-tools
+./install.sh
+```
+
+Or manually copy to: `~/Library/Application Support/KLayout/macros/klayout-tools/`
 
 ### Run Without Installing
 
 ```bash
 klayout design.gds -rm macros/layer_browser.rb
 ```
+
+### Verifying Installation
+
+After installation, verify the tools are working:
+1. Open KLayout
+2. Open any GDS file
+3. Go to **Macros** menu - you should see the tools listed
+4. Or press `Ctrl+Shift+L` to open Layer Browser
+5. The Layer Browser should show a **"Kept Layers"** section with K and C buttons
 
 ## Tools Overview
 
