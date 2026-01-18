@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="utf-8"?>
+<klayout-macro>
+ <description>Layer Statistics (Python)</description>
+ <version>2.0</version>
+ <category/>
+ <prolog/>
+ <epilog/>
+ <doc/>
+ <autorun>false</autorun>
+ <autorun-early>false</autorun-early>
+ <priority>0</priority>
+ <shortcut/>
+ <show-in-menu>true</show-in-menu>
+ <group-name/>
+ <menu-path>tools_menu.end</menu-path>
+ <interpreter>python</interpreter>
+ <dsl-interpreter-name/>
+ <text>
+# Layer Statistics - Python Version
+# Shows shape counts, area, and bounding box for each layer
+
+import pya
+import os
+
+class LayerStatsDialog(pya.QDialog):
+    def __init__(self, view, parent=None):
+        super(LayerStatsDialog, self).__init__(parent)
+        
+        self.view = view
+        self.stats = []
+        
+        self.setWindowTitle("Layer Statistics")
+        self.setMinimumWidth(600)
+        self.setMinimumHeight(500)
+        
+        self.setup_ui()
+        self.calculate_stats()
+    
+    def setup_ui(self):
+        layout = pya.QVBoxLayout(self)
+        
+        # Stats table
+        self.table = pya.QTableWidget(self)
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["Layer", "Shapes", "Area (um²)", "Width (um)", "Height (um)"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.table)
+        
+        # Summary
+        self.summary_label = pya.QLabel("", self)
+        layout.addWidget(self.summary_label)
+        
+        # Buttons
+        btn_layout = pya.QHBoxLayout()
+        
+        self.export_btn = pya.QPushButton("Export CSV", self)
+        self.export_btn.clicked(self.export_csv)
+        btn_layout.addWidget(self.export_btn)
+        
+        self.refresh_btn = pya.QPushButton("Refresh", self)
+        self.refresh_btn.clicked(self.calculate_stats)
+        btn_layout.addWidget(self.refresh_btn)
+        
+        self.close_btn = pya.QPushButton("Close", self)
+        self.close_btn.clicked(self.accept)
+        btn_layout.addWidget(self.close_btn)
+        
+        layout.addLayout(btn_layout)
+    
+    def calculate_stats(self):
+        self.stats = []
+        
+        if not self.view or not self.view.cellview(0):
+            return
+        
+        cv = self.view.cellview(0)
+        layout = cv.layout()
+        cell = cv.cell
+        dbu = layout.dbu
+        
+        if not cell:
+            return
+        
+        total_shapes = 0
+        total_area = 0
+        
+        iter = self.view.begin_layers()
+        while not iter.at_end():
+            lp = iter.current()
+            if lp.valid:
+                layer_num = lp.source_layer
+                datatype = lp.source_datatype
+                layer_idx = layout.find_layer(layer_num, datatype)
+                
+                if layer_idx is not None and layout.is_valid_layer(layer_idx):
+                    # Count shapes
+                    shape_count = 0
+                    area = 0
+                    for shape in cell.each_shape(layer_idx):
+                        shape_count += 1
+                        if shape.is_polygon() or shape.is_box() or shape.is_path():
+                            area += shape.polygon.area()
+                    
+                    # Get bbox
+                    bbox = cell.bbox_per_layer(layer_idx)
+                    if bbox and not bbox.empty():
+                        width = bbox.width() * dbu
+                        height = bbox.height() * dbu
+                    else:
+                        width = 0
+                        height = 0
+                    
+                    area_um2 = area * dbu * dbu
+                    
+                    name = lp.name if lp.name else f"{layer_num}/{datatype}"
+                    
+                    self.stats.append({
+                        'name': name,
+                        'layer': layer_num,
+                        'datatype': datatype,
+                        'shapes': shape_count,
+                        'area': area_um2,
+                        'width': width,
+                        'height': height
+                    })
+                    
+                    total_shapes += shape_count
+                    total_area += area_um2
+            
+            iter.next()
+        
+        # Update table
+        self.table.setRowCount(len(self.stats))
+        for i, stat in enumerate(self.stats):
+            self.table.setItem(i, 0, pya.QTableWidgetItem(stat['name']))
+            self.table.setItem(i, 1, pya.QTableWidgetItem(f"{stat['shapes']:,}"))
+            self.table.setItem(i, 2, pya.QTableWidgetItem(f"{stat['area']:.2f}"))
+            self.table.setItem(i, 3, pya.QTableWidgetItem(f"{stat['width']:.2f}"))
+            self.table.setItem(i, 4, pya.QTableWidgetItem(f"{stat['height']:.2f}"))
+        
+        self.summary_label.setText(f"Total: {len(self.stats)} layers, {total_shapes:,} shapes, {total_area:.2f} um² area")
+    
+    def export_csv(self):
+        path = pya.FileDialog.get_save_file_name("Export CSV", ".", "CSV (*.csv)")
+        path = str(path)
+        if not path:
+            return
+        
+        try:
+            with open(path, 'w') as f:
+                f.write("Layer,Shapes,Area_um2,Width_um,Height_um\n")
+                for stat in self.stats:
+                    f.write(f"\"{stat['name']}\",{stat['shapes']},{stat['area']:.2f},{stat['width']:.2f},{stat['height']:.2f}\n")
+            pya.MessageBox.info("Exported", f"Saved to {path}", pya.MessageBox.Ok)
+        except Exception as e:
+            pya.MessageBox.critical("Error", str(e), pya.MessageBox.Ok)
+
+
+# Run
+app = pya.Application.instance()
+mw = app.main_window()
+view = mw.current_view()
+
+if view:
+    dialog = LayerStatsDialog(view, mw)
+    dialog.exec_()
+else:
+    pya.MessageBox.warning("No View", "Please open a layout first.", pya.MessageBox.Ok)
+</text>
+</klayout-macro>

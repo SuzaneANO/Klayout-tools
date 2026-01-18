@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <klayout-macro>
- <description>PDK Layer Browser with Layer Map Support</description>
- <version>1.3</version>
+ <description>PDK Layer Browser (Python)</description>
+ <version>2.0</version>
  <category/>
  <prolog/>
  <epilog/>
@@ -13,855 +13,474 @@
  <show-in-menu>true</show-in-menu>
  <group-name/>
  <menu-path>tools_menu.end</menu-path>
- <interpreter>ruby</interpreter>
+ <interpreter>python</interpreter>
  <dsl-interpreter-name/>
  <text>
-# encoding: UTF-8
-# KLayout Layer Browser
-# 
-# Browse through PDK layers one by one with isolation mode.
-# 
-# Author: Adam Sbane
-# License: MIT
+# PDK Layer Browser - Python Version
+# Browse through PDK layers one by one with isolation mode
+# Supports .tech and .lyp layer map files
 #
 # Keyboard Shortcuts:
 #   N     - Next layer
-#   P     - Previous layer  
-#   K     - Keep/pin current layer (stays visible while browsing)
-#   C     - Clear all kept/pinned layers
+#   P     - Previous layer
+#   K     - Keep/pin current layer
+#   C     - Clear kept layers
 #   A     - Show all layers
 #   I     - Toggle isolate mode
-#   L     - Load PDK layer map (.lyp file)
-#   Home  - Jump to first layer
-#   End   - Jump to last layer
-#
-# PDK Layer Map Support:
-#   The browser can load .lyp (KLayout layer properties) files to show
-#   proper PDK layer names. Common PDK layer maps:
-#   - SKY130: sky130.lyp
-#   - GF180MCU: gf180mcu.lyp
-#   Click "Load Layer Map" or press L to load a .lyp file.
+#   L     - Load layer map
 
-unless $klayout_layer_browser_loaded
+import pya
+import re
+import os
 
-module KLayoutTools
-module LayerBrowser
-
-  class LayerBrowserDialog &lt; RBA::QDialog
-
-    def initialize(view, parent = nil)
-      super(parent)
-      
-      @view = view
-      @current_layer_index = 0
-      @layers = []
-      @original_visibility = {}
-      @isolate_mode = true
-      @filtered_indices = []
-      @kept_layers = []  # Array of layer indices that are "pinned"
-      @layer_map = {}    # Hash mapping "layer/datatype" to PDK layer name
-      @lyp_file = nil    # Currently loaded .lyp file
-      
-      self.windowTitle = "PDK Layer Browser"
-      self.setMinimumWidth(500)
-      self.setMinimumHeight(650)
-      
-      setup_ui
-      refresh_layers
-      update_display
-    end
-
-    def setup_ui
-      main_layout = RBA::QVBoxLayout.new(self)
-      
-      # Layer info group
-      info_group = RBA::QGroupBox.new("Current Layer", self)
-      info_layout = RBA::QVBoxLayout.new(info_group)
-      
-      @layer_name_label = RBA::QLabel.new("", self)
-      @layer_name_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #2196F3;")
-      info_layout.addWidget(@layer_name_label)
-      
-      @layer_info_label = RBA::QLabel.new("", self)
-      info_layout.addWidget(@layer_info_label)
-      
-      @shape_count_label = RBA::QLabel.new("", self)
-      info_layout.addWidget(@shape_count_label)
-      
-      main_layout.addWidget(info_group)
-      
-      # Progress bar
-      progress_layout = RBA::QHBoxLayout.new
-      @progress_label = RBA::QLabel.new("Layer 0 of 0", self)
-      progress_layout.addWidget(@progress_label)
-      @progress_bar = RBA::QProgressBar.new(self)
-      @progress_bar.setMinimum(0)
-      progress_layout.addWidget(@progress_bar)
-      main_layout.addLayout(progress_layout)
-      
-      # Navigation group
-      nav_group = RBA::QGroupBox.new("Navigation", self)
-      nav_layout = RBA::QHBoxLayout.new(nav_group)
-      
-      @prev_btn = RBA::QPushButton.new("&lt;&lt; Prev (P)", self)
-      @prev_btn.clicked { navigate_prev }
-      nav_layout.addWidget(@prev_btn)
-      
-      @layer_spin = RBA::QSpinBox.new(self)
-      @layer_spin.setMinimum(0)
-      @layer_spin.valueChanged { |v| jump_to_layer(v) }
-      nav_layout.addWidget(@layer_spin)
-      
-      @next_btn = RBA::QPushButton.new("Next (N) &gt;&gt;", self)
-      @next_btn.clicked { navigate_next }
-      nav_layout.addWidget(@next_btn)
-      
-      main_layout.addWidget(nav_group)
-      
-      # Search and layer list
-      list_group = RBA::QGroupBox.new("All Layers", self)
-      list_layout = RBA::QVBoxLayout.new(list_group)
-      
-      # Search box
-      search_layout = RBA::QHBoxLayout.new
-      search_label = RBA::QLabel.new("Search:", self)
-      search_layout.addWidget(search_label)
-      @search_edit = RBA::QLineEdit.new(self)
-      @search_edit.setPlaceholderText("Filter layers by name...")
-      @search_edit.textChanged { |t| filter_layers(t) }
-      search_layout.addWidget(@search_edit)
-      list_layout.addLayout(search_layout)
-      
-      @layer_list = RBA::QListWidget.new(self)
-      @layer_list.currentRowChanged { |row| select_layer_from_list(row) if row &gt;= 0 }
-      list_layout.addWidget(@layer_list)
-      
-      main_layout.addWidget(list_group)
-      
-      # Options group
-      options_group = RBA::QGroupBox.new("Options", self)
-      options_layout = RBA::QVBoxLayout.new(options_group)
-      
-      @isolate_checkbox = RBA::QCheckBox.new("Isolate current layer (I)", self)
-      @isolate_checkbox.setChecked(@isolate_mode)
-      @isolate_checkbox.stateChanged { |state| toggle_isolate_mode(state == RBA::Qt::Checked) }
-      options_layout.addWidget(@isolate_checkbox)
-      
-      @zoom_checkbox = RBA::QCheckBox.new("Auto-zoom to layer extent", self)
-      @zoom_checkbox.setChecked(false)
-      options_layout.addWidget(@zoom_checkbox)
-      
-      main_layout.addWidget(options_group)
-      
-      # PDK Layer Map group
-      pdk_group = RBA::QGroupBox.new("PDK Layer Map", self)
-      pdk_layout = RBA::QVBoxLayout.new(pdk_group)
-      
-      @lyp_label = RBA::QLabel.new("No layer map loaded", self)
-      @lyp_label.setStyleSheet("color: gray;")
-      pdk_layout.addWidget(@lyp_label)
-      
-      pdk_btn_layout = RBA::QHBoxLayout.new
-      @load_lyp_btn = RBA::QPushButton.new("Load Layer Map (L)", self)
-      @load_lyp_btn.clicked { load_layer_map }
-      pdk_btn_layout.addWidget(@load_lyp_btn)
-      
-      @clear_lyp_btn = RBA::QPushButton.new("Clear", self)
-      @clear_lyp_btn.clicked { clear_layer_map }
-      pdk_btn_layout.addWidget(@clear_lyp_btn)
-      
-      @auto_detect_btn = RBA::QPushButton.new("Auto-Detect", self)
-      @auto_detect_btn.clicked { auto_detect_layer_map }
-      pdk_btn_layout.addWidget(@auto_detect_btn)
-      
-      pdk_layout.addLayout(pdk_btn_layout)
-      main_layout.addWidget(pdk_group)
-      
-      # Kept/Pinned layers group
-      kept_group = RBA::QGroupBox.new("Kept Layers (K to add, C to clear)", self)
-      kept_layout = RBA::QVBoxLayout.new(kept_group)
-      
-      @kept_list = RBA::QListWidget.new(self)
-      @kept_list.setMaximumHeight(80)
-      @kept_list.itemDoubleClicked { |item| remove_kept_layer_by_item(item) }
-      kept_layout.addWidget(@kept_list)
-      
-      kept_btn_layout = RBA::QHBoxLayout.new
-      @keep_btn = RBA::QPushButton.new("Keep Current (K)", self)
-      @keep_btn.clicked { keep_current_layer }
-      kept_btn_layout.addWidget(@keep_btn)
-      
-      @clear_kept_btn = RBA::QPushButton.new("Clear All (C)", self)
-      @clear_kept_btn.clicked { clear_kept_layers }
-      kept_btn_layout.addWidget(@clear_kept_btn)
-      
-      kept_layout.addLayout(kept_btn_layout)
-      main_layout.addWidget(kept_group)
-      
-      # Action buttons
-      btn_layout = RBA::QHBoxLayout.new
-      
-      @show_all_btn = RBA::QPushButton.new("Show All (A)", self)
-      @show_all_btn.clicked { show_all_layers }
-      btn_layout.addWidget(@show_all_btn)
-      
-      @export_btn = RBA::QPushButton.new("Export List", self)
-      @export_btn.clicked { export_layer_list }
-      btn_layout.addWidget(@export_btn)
-      
-      @refresh_btn = RBA::QPushButton.new("Refresh", self)
-      @refresh_btn.clicked { refresh_layers; update_display }
-      btn_layout.addWidget(@refresh_btn)
-      
-      @close_btn = RBA::QPushButton.new("Close", self)
-      @close_btn.clicked { self.accept }
-      btn_layout.addWidget(@close_btn)
-      
-      main_layout.addLayout(btn_layout)
-      
-      # Status bar
-      @status_label = RBA::QLabel.new("", self)
-      @status_label.setStyleSheet("color: gray; font-style: italic;")
-      main_layout.addWidget(@status_label)
-    end
-
-    def refresh_layers
-      @layers = []
-      @layer_list.clear
-      @filtered_indices = []
-      
-      return unless @view &amp;&amp; @view.cellview(0)
-      
-      save_visibility_state
-      
-      iter = @view.begin_layers
-      while !iter.at_end?
-        lp = iter.current
-        if lp.valid?
-          layer_num = lp.source_layer
-          datatype = lp.source_datatype
-          
-          # Try to get PDK layer name from loaded layer map
-          pdk_name = get_pdk_layer_name(layer_num, datatype)
-          
-          # Determine display name
-          if pdk_name
-            display_name = pdk_name
-          elsif !lp.name.empty?
-            display_name = lp.name
-          else
-            display_name = "#{lp.source}"
-          end
-          
-          layer_info = {
-            :iter =&gt; iter.dup,
-            :layer_prop =&gt; lp,
-            :source =&gt; lp.source,
-            :name =&gt; display_name,
-            :pdk_name =&gt; pdk_name,
-            :original_name =&gt; lp.name,
-            :layer =&gt; layer_num,
-            :datatype =&gt; datatype
-          }
-          @layers &lt;&lt; layer_info
-          @filtered_indices &lt;&lt; (@layers.length - 1)
-        end
-        iter.next
-      end
-      
-      populate_layer_list
-      
-      max_val = [(@layers.length - 1), 0].max
-      @layer_spin.setMaximum(max_val)
-      @progress_bar.setMaximum(max_val)
-      
-      lyp_info = @lyp_file ? " (#{File.basename(@lyp_file)})" : ""
-      @status_label.text = "Found #{@layers.length} layers#{lyp_info}"
-    end
-
-    def populate_layer_list(filter_text = "")
-      @layer_list.blockSignals(true)
-      @layer_list.clear
-      @filtered_indices = []
-      
-      filter_lower = filter_text.downcase
-      @layers.each_with_index do |layer, i|
-        display_name = "#{i}: #{layer[:name]} (#{layer[:layer]}/#{layer[:datatype]})"
-        if filter_text.empty? || display_name.downcase.include?(filter_lower)
-          @layer_list.addItem(display_name)
-          @filtered_indices &lt;&lt; i
-        end
-      end
-      
-      @layer_list.blockSignals(false)
-    end
-
-    def filter_layers(text)
-      populate_layer_list(text)
-    end
-
-    def save_visibility_state
-      @original_visibility = {}
-      iter = @view.begin_layers
-      index = 0
-      while !iter.at_end?
-        lp = iter.current
-        @original_visibility[index] = lp.visible?
-        iter.next
-        index += 1
-      end
-    end
-
-    def restore_visibility_state
-      iter = @view.begin_layers
-      index = 0
-      while !iter.at_end?
-        lp = iter.current
-        if @original_visibility.key?(index)
-          lp.visible = @original_visibility[index]
-        end
-        iter.next
-        index += 1
-      end
-    end
-
-    def update_display
-      return if @layers.empty?
-      
-      layer = @layers[@current_layer_index]
-      
-      # Show PDK name prominently if available
-      if layer[:pdk_name]
-        @layer_name_label.text = layer[:pdk_name]
-        @layer_name_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #4CAF50;")
-      else
-        @layer_name_label.text = layer[:name]
-        @layer_name_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #2196F3;")
-      end
-      
-      @layer_info_label.text = "Layer: #{layer[:layer]} / Datatype: #{layer[:datatype]}"
-      
-      shape_count = count_shapes(layer[:layer], layer[:datatype])
-      @shape_count_label.text = "Shapes: #{shape_count.to_s.reverse.gsub(/(\d{3})(?=\d)/, '\\1,').reverse}"
-      
-      @progress_label.text = "Layer #{@current_layer_index + 1} of #{@layers.length}"
-      @progress_bar.setValue(@current_layer_index)
-      
-      @layer_spin.blockSignals(true)
-      @layer_spin.setValue(@current_layer_index)
-      @layer_spin.blockSignals(false)
-      
-      select_list_item(@current_layer_index)
-      
-      if @isolate_mode
-        isolate_current_layer
-      end
-      
-      if @zoom_checkbox.isChecked
-        zoom_to_layer
-      end
-      
-      lyp_info = @lyp_file ? " [#{File.basename(@lyp_file)}]" : ""
-      @status_label.text = "Layer #{@current_layer_index + 1} of #{@layers.length}#{lyp_info}"
-    end
-
-    def select_list_item(layer_index)
-      @layer_list.blockSignals(true)
-      list_row = @filtered_indices.index(layer_index)
-      @layer_list.setCurrentRow(list_row) if list_row
-      @layer_list.blockSignals(false)
-    end
-
-    def count_shapes(layer_num, datatype)
-      return 0 unless @view &amp;&amp; @view.cellview(0)
-      
-      cv = @view.cellview(0)
-      layout = cv.layout
-      cell = cv.cell
-      
-      return 0 unless cell
-      
-      layer_index = layout.find_layer(layer_num, datatype)
-      return 0 if layer_index.nil? || !layout.is_valid_layer?(layer_index)
-      
-      count = 0
-      cell.each_shape(layer_index) { count += 1 }
-      count
-    end
-
-    def isolate_current_layer
-      return if @layers.empty?
-      
-      # Hide all layers first
-      iter = @view.begin_layers
-      while !iter.at_end?
-        lp = iter.current
-        lp.visible = false
-        iter.next
-      end
-      
-      # Show current layer
-      layer = @layers[@current_layer_index]
-      layer[:layer_prop].visible = true
-      
-      # Also show all kept/pinned layers
-      @kept_layers.each do |kept_idx|
-        if kept_idx &gt;= 0 &amp;&amp; kept_idx &lt; @layers.length
-          @layers[kept_idx][:layer_prop].visible = true
-        end
-      end
-    end
-
-    def keep_current_layer
-      return if @layers.empty?
-      
-      # Don't add duplicates
-      unless @kept_layers.include?(@current_layer_index)
-        @kept_layers &lt;&lt; @current_layer_index
-        update_kept_list
+class LayerBrowserDialog(pya.QDialog):
+    def __init__(self, view, parent=None):
+        super(LayerBrowserDialog, self).__init__(parent)
         
-        layer = @layers[@current_layer_index]
-        @status_label.text = "Kept layer: #{layer[:name]} (#{@kept_layers.length} pinned)"
-      else
-        @status_label.text = "Layer already kept"
-      end
-      
-      # Make sure the kept layer is visible
-      if @isolate_mode
-        isolate_current_layer
-      end
-    end
-
-    def clear_kept_layers
-      @kept_layers = []
-      update_kept_list
-      @status_label.text = "Cleared all kept layers"
-      
-      # Update display to reflect changes
-      if @isolate_mode
-        isolate_current_layer
-      end
-    end
-
-    def remove_kept_layer_by_item(item)
-      row = @kept_list.row(item)
-      return if row &lt; 0 || row &gt;= @kept_layers.length
-      
-      removed_idx = @kept_layers[row]
-      @kept_layers.delete_at(row)
-      update_kept_list
-      
-      if removed_idx &lt; @layers.length
-        layer = @layers[removed_idx]
-        @status_label.text = "Removed kept layer: #{layer[:name]}"
-      end
-      
-      # Update display
-      if @isolate_mode
-        isolate_current_layer
-      end
-    end
-
-    def update_kept_list
-      @kept_list.clear
-      @kept_layers.each do |idx|
-        if idx &gt;= 0 &amp;&amp; idx &lt; @layers.length
-          layer = @layers[idx]
-          @kept_list.addItem("#{idx}: #{layer[:name]}")
-        end
-      end
-    end
-
-    def show_all_layers
-      iter = @view.begin_layers
-      while !iter.at_end?
-        lp = iter.current
-        lp.visible = true
-        iter.next
-      end
-      @status_label.text = "All layers visible"
-    end
-
-    # PDK Layer Map functions
-    def load_layer_map
-      file_path = RBA::FileDialog.get_open_file_name(
-        "Load PDK Layer Map",
-        ".",
-        "Layer Properties (*.lyp);;Layer Map (*.map);;All files (*)"
-      )
-      
-      return if file_path.nil? || file_path.empty?
-      
-      begin
-        if file_path.end_with?(".map")
-          parse_map_file(file_path)
-        else
-          parse_lyp_file(file_path)
-        end
-        @lyp_file = file_path
-        @lyp_label.text = "Loaded: #{File.basename(file_path)} (#{@layer_map.length} layers)"
-        @lyp_label.setStyleSheet("color: green; font-weight: bold;")
-        refresh_layers
-        update_display
-        @status_label.text = "Loaded #{@layer_map.length} layer definitions from #{File.basename(file_path)}"
-      rescue =&gt; e
-        RBA::MessageBox.critical("Load Error", "Failed to load layer map: #{e.message}\n\n#{e.backtrace.first(3).join("\n")}", RBA::MessageBox::Ok)
-      end
-    end
-
-    def parse_map_file(file_path)
-      # Parse .map file format (SKY130 style):
-      # li1     NET,SPNET,VIA            67  20
-      # met1    LEFPIN,NET,SPNET,PIN,VIA 68  20
-      @layer_map = {}
-      
-      File.readlines(file_path).each do |line|
-        line = line.strip
-        next if line.empty? || line.start_with?("#")
+        self.view = view
+        self.current_idx = 0
+        self.layers = []
+        self.layer_map = {}
+        self.lyp_file = None
+        self.isolate_mode = True
+        self.kept_layers = []
         
-        # Format: name  purpose  layer  datatype
-        parts = line.split(/\s+/)
-        next if parts.length &lt; 4
+        self.setWindowTitle("PDK Layer Browser")
+        self.setMinimumWidth(500)
+        self.setMinimumHeight(650)
         
-        layer_name = parts[0]
-        layer_num = parts[-2].to_i
-        datatype = parts[-1].to_i
+        self.setup_ui()
+        self.refresh_layers()
+        self.update_display()
+    
+    def setup_ui(self):
+        layout = pya.QVBoxLayout(self)
         
-        key = "#{layer_num}/#{datatype}"
+        # Current layer info
+        info_group = pya.QGroupBox("Current Layer", self)
+        info_layout = pya.QVBoxLayout(info_group)
         
-        # Only add if not already present (first occurrence wins)
-        unless @layer_map.key?(key)
-          @layer_map[key] = {
-            :name =&gt; layer_name,
-            :layer =&gt; layer_num,
-            :datatype =&gt; datatype
-          }
-        end
-      end
-    end
-
-    def parse_lyp_file(file_path)
-      @layer_map = {}
-      
-      content = File.read(file_path)
-      
-      # Parse XML to extract layer names and sources
-      # Format: &lt;name&gt;layername - layer/datatype&lt;/name&gt; and &lt;source&gt;layer/datatype@1&lt;/source&gt;
-      content.scan(/&lt;properties&gt;(.*?)&lt;\/properties&gt;/m) do |props|
-        prop_block = props[0]
+        self.name_label = pya.QLabel("", self)
+        self.name_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #2196F3;")
+        info_layout.addWidget(self.name_label)
         
-        # Extract name
-        name_match = prop_block.match(/&lt;name&gt;(.*?)&lt;\/name&gt;/)
-        source_match = prop_block.match(/&lt;source&gt;(.*?)&lt;\/source&gt;/)
+        self.info_label = pya.QLabel("", self)
+        info_layout.addWidget(self.info_label)
         
-        if name_match &amp;&amp; source_match
-          name = name_match[1].strip
-          source = source_match[1].strip
-          
-          # Parse source: "64/44@1" -&gt; "64/44"
-          if source =~ /(\d+)\/(\d+)/
-            layer = $1.to_i
-            datatype = $2.to_i
-            key = "#{layer}/#{datatype}"
+        self.shape_label = pya.QLabel("", self)
+        info_layout.addWidget(self.shape_label)
+        
+        layout.addWidget(info_group)
+        
+        # Progress
+        progress_layout = pya.QHBoxLayout()
+        self.progress_label = pya.QLabel("Layer 0 of 0", self)
+        progress_layout.addWidget(self.progress_label)
+        self.progress_bar = pya.QProgressBar(self)
+        progress_layout.addWidget(self.progress_bar)
+        layout.addLayout(progress_layout)
+        
+        # Navigation
+        nav_group = pya.QGroupBox("Navigation", self)
+        nav_layout = pya.QHBoxLayout(nav_group)
+        
+        self.prev_btn = pya.QPushButton("&lt;&lt; Prev (P)", self)
+        self.prev_btn.clicked(self.navigate_prev)
+        nav_layout.addWidget(self.prev_btn)
+        
+        self.layer_spin = pya.QSpinBox(self)
+        self.layer_spin.setMinimum(0)
+        self.layer_spin.valueChanged(self.jump_to_layer)
+        nav_layout.addWidget(self.layer_spin)
+        
+        self.next_btn = pya.QPushButton("Next (N) &gt;&gt;", self)
+        self.next_btn.clicked(self.navigate_next)
+        nav_layout.addWidget(self.next_btn)
+        
+        layout.addWidget(nav_group)
+        
+        # Layer list with search
+        list_group = pya.QGroupBox("All Layers", self)
+        list_layout = pya.QVBoxLayout(list_group)
+        
+        search_layout = pya.QHBoxLayout()
+        search_layout.addWidget(pya.QLabel("Search:", self))
+        self.search_edit = pya.QLineEdit(self)
+        self.search_edit.setPlaceholderText("Filter layers...")
+        self.search_edit.textChanged(self.filter_layers)
+        search_layout.addWidget(self.search_edit)
+        list_layout.addLayout(search_layout)
+        
+        self.layer_list = pya.QListWidget(self)
+        self.layer_list.currentRowChanged(self.select_from_list)
+        list_layout.addWidget(self.layer_list)
+        
+        layout.addWidget(list_group)
+        
+        # Options
+        options_group = pya.QGroupBox("Options", self)
+        options_layout = pya.QVBoxLayout(options_group)
+        
+        self.isolate_cb = pya.QCheckBox("Isolate current layer (I)", self)
+        self.isolate_cb.setChecked(self.isolate_mode)
+        self.isolate_cb.stateChanged(self.toggle_isolate)
+        options_layout.addWidget(self.isolate_cb)
+        
+        self.zoom_cb = pya.QCheckBox("Auto-zoom to layer", self)
+        options_layout.addWidget(self.zoom_cb)
+        
+        layout.addWidget(options_group)
+        
+        # PDK Layer Map
+        pdk_group = pya.QGroupBox("PDK Layer Map", self)
+        pdk_layout = pya.QVBoxLayout(pdk_group)
+        
+        self.lyp_label = pya.QLabel("No layer map loaded", self)
+        self.lyp_label.setStyleSheet("color: gray;")
+        pdk_layout.addWidget(self.lyp_label)
+        
+        pdk_btn_layout = pya.QHBoxLayout()
+        
+        self.load_btn = pya.QPushButton("Load Map (L)", self)
+        self.load_btn.clicked(self.load_layer_map)
+        pdk_btn_layout.addWidget(self.load_btn)
+        
+        self.clear_btn = pya.QPushButton("Clear", self)
+        self.clear_btn.clicked(self.clear_layer_map)
+        pdk_btn_layout.addWidget(self.clear_btn)
+        
+        pdk_layout.addLayout(pdk_btn_layout)
+        layout.addWidget(pdk_group)
+        
+        # Kept layers
+        kept_group = pya.QGroupBox("Kept Layers (K to add, C to clear)", self)
+        kept_layout = pya.QVBoxLayout(kept_group)
+        
+        self.kept_list = pya.QListWidget(self)
+        self.kept_list.setMaximumHeight(80)
+        kept_layout.addWidget(self.kept_list)
+        
+        kept_btn_layout = pya.QHBoxLayout()
+        self.keep_btn = pya.QPushButton("Keep Current (K)", self)
+        self.keep_btn.clicked(self.keep_current)
+        kept_btn_layout.addWidget(self.keep_btn)
+        
+        self.clear_kept_btn = pya.QPushButton("Clear All (C)", self)
+        self.clear_kept_btn.clicked(self.clear_kept)
+        kept_btn_layout.addWidget(self.clear_kept_btn)
+        
+        kept_layout.addLayout(kept_btn_layout)
+        layout.addWidget(kept_group)
+        
+        # Action buttons
+        btn_layout = pya.QHBoxLayout()
+        
+        self.show_all_btn = pya.QPushButton("Show All (A)", self)
+        self.show_all_btn.clicked(self.show_all_layers)
+        btn_layout.addWidget(self.show_all_btn)
+        
+        self.refresh_btn = pya.QPushButton("Refresh", self)
+        self.refresh_btn.clicked(self.on_refresh)
+        btn_layout.addWidget(self.refresh_btn)
+        
+        self.close_btn = pya.QPushButton("Close", self)
+        self.close_btn.clicked(self.accept)
+        btn_layout.addWidget(self.close_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        # Status
+        self.status_label = pya.QLabel("", self)
+        self.status_label.setStyleSheet("color: gray; font-style: italic;")
+        layout.addWidget(self.status_label)
+    
+    def refresh_layers(self):
+        self.layers = []
+        self.layer_list.clear()
+        self.filtered_indices = []
+        
+        if not self.view or not self.view.cellview(0):
+            return
+        
+        iter = self.view.begin_layers()
+        while not iter.at_end():
+            lp = iter.current()
+            if lp.valid:
+                layer_num = lp.source_layer
+                datatype = lp.source_datatype
+                
+                pdk_name = self.get_pdk_name(layer_num, datatype)
+                
+                if pdk_name:
+                    display = pdk_name
+                elif lp.name:
+                    display = lp.name
+                else:
+                    display = f"{layer_num}/{datatype}"
+                
+                self.layers.append({
+                    'prop': lp,
+                    'name': display,
+                    'pdk_name': pdk_name,
+                    'layer': layer_num,
+                    'datatype': datatype
+                })
+                self.filtered_indices.append(len(self.layers) - 1)
+            iter.next()
+        
+        self.populate_list()
+        
+        max_val = max(len(self.layers) - 1, 0)
+        self.layer_spin.setMaximum(max_val)
+        self.progress_bar.setMaximum(max_val)
+    
+    def populate_list(self, filter_text=""):
+        self.layer_list.blockSignals(True)
+        self.layer_list.clear()
+        self.filtered_indices = []
+        
+        filter_lower = filter_text.lower()
+        for i, layer in enumerate(self.layers):
+            display = f"{i}: {layer['name']} ({layer['layer']}/{layer['datatype']})"
+            if not filter_text or filter_lower in display.lower():
+                self.layer_list.addItem(display)
+                self.filtered_indices.append(i)
+        
+        self.layer_list.blockSignals(False)
+    
+    def filter_layers(self, text):
+        self.populate_list(text)
+    
+    def get_pdk_name(self, layer, datatype):
+        key = f"{layer}/{datatype}"
+        return self.layer_map.get(key)
+    
+    def update_display(self):
+        if not self.layers:
+            return
+        
+        layer = self.layers[self.current_idx]
+        
+        if layer['pdk_name']:
+            self.name_label.setText(layer['pdk_name'])
+            self.name_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #4CAF50;")
+        else:
+            self.name_label.setText(layer['name'])
+            self.name_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #2196F3;")
+        
+        self.info_label.setText(f"Layer: {layer['layer']} / Datatype: {layer['datatype']}")
+        
+        self.progress_label.setText(f"Layer {self.current_idx + 1} of {len(self.layers)}")
+        self.progress_bar.setValue(self.current_idx)
+        
+        self.layer_spin.blockSignals(True)
+        self.layer_spin.setValue(self.current_idx)
+        self.layer_spin.blockSignals(False)
+        
+        # Select in list
+        if self.current_idx in self.filtered_indices:
+            row = self.filtered_indices.index(self.current_idx)
+            self.layer_list.blockSignals(True)
+            self.layer_list.setCurrentRow(row)
+            self.layer_list.blockSignals(False)
+        
+        if self.isolate_mode:
+            self.isolate_layer()
+        
+        if self.zoom_cb.isChecked():
+            self.zoom_to_layer()
+    
+    def isolate_layer(self):
+        if not self.layers:
+            return
+        
+        # Hide all
+        iter = self.view.begin_layers()
+        while not iter.at_end():
+            iter.current().visible = False
+            iter.next()
+        
+        # Show current
+        self.layers[self.current_idx]['prop'].visible = True
+        
+        # Show kept
+        for idx in self.kept_layers:
+            if 0 &lt;= idx &lt; len(self.layers):
+                self.layers[idx]['prop'].visible = True
+    
+    def show_all_layers(self):
+        iter = self.view.begin_layers()
+        while not iter.at_end():
+            iter.current().visible = True
+            iter.next()
+        self.status_label.setText("All layers visible")
+    
+    def navigate_next(self):
+        if self.layers:
+            self.current_idx = (self.current_idx + 1) % len(self.layers)
+            self.update_display()
+    
+    def navigate_prev(self):
+        if self.layers:
+            self.current_idx = (self.current_idx - 1) % len(self.layers)
+            self.update_display()
+    
+    def jump_to_layer(self, idx):
+        if self.layers and 0 &lt;= idx &lt; len(self.layers):
+            self.current_idx = idx
+            self.update_display()
+    
+    def select_from_list(self, row):
+        if 0 &lt;= row &lt; len(self.filtered_indices):
+            self.current_idx = self.filtered_indices[row]
+            self.update_display()
+    
+    def toggle_isolate(self, state):
+        self.isolate_mode = (state == pya.Qt.Checked)
+        if self.isolate_mode:
+            self.isolate_layer()
+        else:
+            self.show_all_layers()
+    
+    def keep_current(self):
+        if not self.layers:
+            return
+        if self.current_idx not in self.kept_layers:
+            self.kept_layers.append(self.current_idx)
+            self.update_kept_list()
+            self.status_label.setText(f"Kept: {self.layers[self.current_idx]['name']}")
+        if self.isolate_mode:
+            self.isolate_layer()
+    
+    def clear_kept(self):
+        self.kept_layers = []
+        self.update_kept_list()
+        self.status_label.setText("Cleared kept layers")
+        if self.isolate_mode:
+            self.isolate_layer()
+    
+    def update_kept_list(self):
+        self.kept_list.clear()
+        for idx in self.kept_layers:
+            if 0 &lt;= idx &lt; len(self.layers):
+                layer = self.layers[idx]
+                self.kept_list.addItem(f"{idx}: {layer['name']}")
+    
+    def zoom_to_layer(self):
+        if not self.layers:
+            return
+        layer = self.layers[self.current_idx]
+        cv = self.view.cellview(0)
+        if cv and cv.cell:
+            layout = cv.layout()
+            layer_idx = layout.find_layer(layer['layer'], layer['datatype'])
+            if layer_idx is not None and layout.is_valid_layer(layer_idx):
+                bbox = cv.cell.bbox_per_layer(layer_idx)
+                if bbox and not bbox.empty():
+                    self.view.zoom_box(bbox.enlarged(bbox.width() * 0.1, bbox.height() * 0.1))
+    
+    def on_refresh(self):
+        self.refresh_layers()
+        self.update_display()
+    
+    def load_layer_map(self):
+        path = pya.FileDialog.get_open_file_name(
+            "Load Layer Map", ".",
+            "Tech File (*.tech);;Layer Properties (*.lyp);;All (*)"
+        )
+        path = str(path)
+        if not path:
+            return
+        
+        try:
+            with open(path, 'r') as f:
+                content = f.read()
             
-            # Extract just the layer name part (before " - ")
-            layer_name = name.split(" - ").first.strip
+            self.layer_map = {}
             
-            @layer_map[key] = {
-              :name =&gt; layer_name,
-              :full_name =&gt; name,
-              :layer =&gt; layer,
-              :datatype =&gt; datatype
-            }
-          end
-        end
-      end
-    end
+            if path.lower().endswith('.tech'):
+                # Parse .tech file
+                cif_start = content.find('cifoutput')
+                if cif_start &gt;= 0:
+                    cif_section = content[cif_start:]
+                    current_layer = None
+                    for line in cif_section.split('\n'):
+                        line = line.strip()
+                        m = re.match(r'^layer\s+(\w+)', line)
+                        if m:
+                            current_layer = m.group(1)
+                        elif current_layer:
+                            m = re.match(r'^calma\s+(\d+)\s+(\d+)', line)
+                            if m:
+                                key = f"{m.group(1)}/{m.group(2)}"
+                                self.layer_map[key] = current_layer
+                                current_layer = None
+            else:
+                # Parse .lyp file
+                for m in re.finditer(r'&lt;properties&gt;(.*?)&lt;/properties&gt;', content, re.DOTALL):
+                    block = m.group(1)
+                    name_m = re.search(r'&lt;name&gt;([^&lt;]+)&lt;/name&gt;', block)
+                    src_m = re.search(r'&lt;source&gt;([^&lt;]+)&lt;/source&gt;', block)
+                    if name_m and src_m:
+                        name = name_m.group(1).strip()
+                        src = src_m.group(1).strip()
+                        layer_m = re.search(r'(\d+)/(\d+)', src)
+                        if layer_m:
+                            key = f"{layer_m.group(1)}/{layer_m.group(2)}"
+                            layer_name = name.split(" - ")[0].strip()
+                            self.layer_map[key] = layer_name
+            
+            self.lyp_file = path
+            self.lyp_label.setText(f"Loaded: {os.path.basename(path)} ({len(self.layer_map)} layers)")
+            self.lyp_label.setStyleSheet("color: green; font-weight: bold;")
+            self.refresh_layers()
+            self.update_display()
+            self.status_label.setText(f"Loaded {len(self.layer_map)} mappings")
+            
+        except Exception as e:
+            pya.MessageBox.critical("Error", str(e), pya.MessageBox.Ok)
+    
+    def clear_layer_map(self):
+        self.layer_map = {}
+        self.lyp_file = None
+        self.lyp_label.setText("No layer map loaded")
+        self.lyp_label.setStyleSheet("color: gray;")
+        self.refresh_layers()
+        self.update_display()
+    
+    def keyPressEvent(self, event):
+        key = event.key()
+        if key == pya.Qt.Key_N:
+            self.navigate_next()
+        elif key == pya.Qt.Key_P:
+            self.navigate_prev()
+        elif key == pya.Qt.Key_K:
+            self.keep_current()
+        elif key == pya.Qt.Key_C:
+            self.clear_kept()
+        elif key == pya.Qt.Key_A:
+            self.show_all_layers()
+        elif key == pya.Qt.Key_I:
+            self.isolate_cb.setChecked(not self.isolate_cb.isChecked())
+        elif key == pya.Qt.Key_L:
+            self.load_layer_map()
+        elif key == pya.Qt.Key_Home:
+            self.jump_to_layer(0)
+        elif key == pya.Qt.Key_End:
+            self.jump_to_layer(len(self.layers) - 1)
+        else:
+            super(LayerBrowserDialog, self).keyPressEvent(event)
 
-    def clear_layer_map
-      @layer_map = {}
-      @lyp_file = nil
-      @lyp_label.text = "No layer map loaded"
-      @lyp_label.setStyleSheet("color: gray;")
-      refresh_layers
-      update_display
-      @status_label.text = "Layer map cleared"
-    end
 
-    def auto_detect_layer_map
-      # Try to find .lyp or .map file in common locations
-      search_paths = []
-      
-      # Check if there's a .lyp file in the same directory as the GDS
-      if @view &amp;&amp; @view.cellview(0)
-        cv = @view.cellview(0)
-        if cv.filename &amp;&amp; !cv.filename.empty?
-          gds_dir = File.dirname(cv.filename)
-          search_paths &lt;&lt; gds_dir
-          search_paths &lt;&lt; File.join(gds_dir, "..")
-          search_paths &lt;&lt; File.join(gds_dir, "..", "results", "signoff")
-        end
-      end
-      
-      # Check PDK_ROOT environment variable
-      pdk_root = ENV['PDK_ROOT']
-      if pdk_root &amp;&amp; !pdk_root.empty?
-        search_paths &lt;&lt; File.join(pdk_root, "sky130A", "libs.tech", "klayout", "tech")
-        search_paths &lt;&lt; File.join(pdk_root, "sky130A", "libs.tech", "klayout")
-        search_paths &lt;&lt; File.join(pdk_root, "gf180mcuC", "libs.tech", "klayout", "tech")
-        search_paths &lt;&lt; File.join(pdk_root, "gf180mcuC", "libs.tech", "klayout")
-      end
-      
-      # Also check common volare locations
-      home = ENV['HOME'] || ENV['USERPROFILE'] || "~"
-      search_paths &lt;&lt; File.join(home, ".volare", "volare", "sky130", "versions")
-      
-      # Search for .lyp and .map files
-      found_file = nil
-      search_paths.each do |path|
-        next unless File.directory?(path)
-        
-        # First try .lyp files
-        Dir.glob(File.join(path, "**", "*.lyp")).each do |f|
-          found_file = f
-          break
-        end
-        break if found_file
-        
-        # Then try .map files
-        Dir.glob(File.join(path, "**", "*.map")).each do |f|
-          found_file = f
-          break
-        end
-        break if found_file
-      end
-      
-      if found_file
-        begin
-          if found_file.end_with?(".map")
-            parse_map_file(found_file)
-          else
-            parse_lyp_file(found_file)
-          end
-          @lyp_file = found_file
-          @lyp_label.text = "Auto: #{File.basename(found_file)} (#{@layer_map.length})"
-          @lyp_label.setStyleSheet("color: green; font-weight: bold;")
-          refresh_layers
-          update_display
-          @status_label.text = "Auto-detected #{@layer_map.length} layers from #{File.basename(found_file)}"
-        rescue =&gt; e
-          @status_label.text = "Auto-detect failed: #{e.message}"
-        end
-      else
-        @status_label.text = "No layer map found. Use 'Load Layer Map' to browse."
-        RBA::MessageBox.info("Auto-Detect", 
-          "No .lyp or .map file found automatically.\n\n" +
-          "Please use 'Load Layer Map' to manually select a file.\n\n" +
-          "Common locations:\n" +
-          "- Same folder as your GDS file\n" +
-          "- PDK libs.tech/klayout/tech folder\n" +
-          "- OpenLane run results/signoff folder",
-          RBA::MessageBox::Ok)
-      end
-    end
+# Run dialog
+app = pya.Application.instance()
+mw = app.main_window()
+view = mw.current_view()
 
-    def get_pdk_layer_name(layer, datatype)
-      key = "#{layer}/#{datatype}"
-      if @layer_map.key?(key)
-        return @layer_map[key][:name]
-      end
-      nil
-    end
-
-    def zoom_to_layer
-      return if @layers.empty?
-      
-      layer = @layers[@current_layer_index]
-      cv = @view.cellview(0)
-      return unless cv &amp;&amp; cv.cell
-      
-      layout = cv.layout
-      cell = cv.cell
-      layer_index = layout.find_layer(layer[:layer], layer[:datatype])
-      
-      return if layer_index.nil? || !layout.is_valid_layer?(layer_index)
-      
-      bbox = cell.bbox_per_layer(layer_index)
-      if bbox &amp;&amp; !bbox.empty?
-        @view.zoom_box(bbox.enlarged(bbox.width * 0.1, bbox.height * 0.1))
-      end
-    end
-
-    def navigate_next
-      return if @layers.empty?
-      @current_layer_index = (@current_layer_index + 1) % @layers.length
-      update_display
-    end
-
-    def navigate_prev
-      return if @layers.empty?
-      @current_layer_index = (@current_layer_index - 1) % @layers.length
-      update_display
-    end
-
-    def jump_to_layer(index)
-      return if @layers.empty? || index &lt; 0 || index &gt;= @layers.length
-      @current_layer_index = index
-      update_display
-    end
-
-    def select_layer_from_list(row)
-      return if row &lt; 0 || row &gt;= @filtered_indices.length
-      @current_layer_index = @filtered_indices[row]
-      update_display
-    end
-
-    def toggle_isolate_mode(enabled)
-      @isolate_mode = enabled
-      if enabled
-        isolate_current_layer
-      else
-        show_all_layers
-      end
-    end
-
-    def export_layer_list
-      return if @layers.empty?
-      
-      file_path = RBA::FileDialog.get_save_file_name(
-        "Export Layer List",
-        ".",
-        "CSV files (*.csv);;Text files (*.txt);;All files (*)"
-      )
-      
-      return if file_path.nil? || file_path.empty?
-      
-      begin
-        File.open(file_path, 'w') do |f|
-          f.puts "Index,Name,Layer,Datatype,Shapes"
-          @layers.each_with_index do |layer, i|
-            shape_count = count_shapes(layer[:layer], layer[:datatype])
-            f.puts "#{i},\"#{layer[:name]}\",#{layer[:layer]},#{layer[:datatype]},#{shape_count}"
-          end
-        end
-        @status_label.text = "Exported to #{file_path}"
-      rescue =&gt; e
-        RBA::MessageBox.critical("Export Error", e.message, RBA::MessageBox::Ok)
-      end
-    end
-
-    def keyPressEvent(event)
-      case event.key
-      when RBA::Qt::Key_N
-        navigate_next
-      when RBA::Qt::Key_P
-        navigate_prev
-      when RBA::Qt::Key_K
-        keep_current_layer
-      when RBA::Qt::Key_C
-        clear_kept_layers
-      when RBA::Qt::Key_A
-        show_all_layers
-      when RBA::Qt::Key_I
-        @isolate_checkbox.setChecked(!@isolate_checkbox.isChecked)
-      when RBA::Qt::Key_L
-        load_layer_map
-      when RBA::Qt::Key_Home
-        jump_to_layer(0)
-      when RBA::Qt::Key_End
-        jump_to_layer(@layers.length - 1)
-      else
-        super(event)
-      end
-    end
-
-    def closeEvent(event)
-      super(event)
-    end
-
-  end
-
-  # Plugin for toolbar integration
-  class LayerBrowserPlugin &lt; RBA::Plugin
-    def initialize(view)
-      super()
-      @view = view
-      @dialog = nil
-    end
-
-    def activated
-      show_dialog
-    end
-
-    def deactivated
-    end
-
-    def show_dialog
-      if @dialog.nil? || @dialog.destroyed?
-        @dialog = LayerBrowserDialog.new(@view, RBA::Application.instance.main_window)
-      end
-      @dialog.show
-      @dialog.raise
-    end
-
-    def mouse_click_event(p, buttons, prio)
-      false
-    end
-  end
-
-  # Plugin factory
-  class LayerBrowserPluginFactory &lt; RBA::PluginFactory
-    def initialize
-      super
-      self.has_tool_entry = true
-      self.register(-900, "layer_browser", "Layer Browser")
-    end
-
-    def create_plugin(manager, root, view)
-      LayerBrowserPlugin.new(view)
-    end
-  end
-
-  # Create factory instance
-  LayerBrowserPluginFactory.new
-
-  # Add menu action
-  app = RBA::Application.instance
-  mw = app.main_window
-  menu = mw.menu
-  
-  unless menu.is_valid("tools_menu.layer_browser_action")
-    action = RBA::Action.new
-    action.title = "Layer Browser"
-    action.shortcut = "Ctrl+Shift+L"
-    action.on_triggered do
-      view = mw.current_view
-      if view
-        dialog = LayerBrowserDialog.new(view, mw)
-        dialog.exec
-      else
-        RBA::MessageBox.warning("No View", "Please open a layout first.", RBA::MessageBox::Ok)
-      end
-    end
-    menu.insert_item("tools_menu.end", "layer_browser_action", action)
-  end
-
-end # LayerBrowser
-end # KLayoutTools
-
-$klayout_layer_browser_loaded = true
-end # unless loaded
-
-# Show dialog when run as macro
-app = RBA::Application.instance
-mw = app.main_window
-view = mw.current_view
-
-if view
-  dialog = KLayoutTools::LayerBrowser::LayerBrowserDialog.new(view, mw)
-  dialog.exec
-else
-  RBA::MessageBox.warning("No View", "Please open a layout first.", RBA::MessageBox::Ok)
-end
+if view:
+    dialog = LayerBrowserDialog(view, mw)
+    dialog.exec_()
+else:
+    pya.MessageBox.warning("No View", "Please open a layout first.", pya.MessageBox.Ok)
 </text>
 </klayout-macro>

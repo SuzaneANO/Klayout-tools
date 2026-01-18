@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="utf-8"?>
+<klayout-macro>
+ <description>Cell Hierarchy Viewer (Python)</description>
+ <version>2.0</version>
+ <category/>
+ <prolog/>
+ <epilog/>
+ <doc/>
+ <autorun>false</autorun>
+ <autorun-early>false</autorun-early>
+ <priority>0</priority>
+ <shortcut/>
+ <show-in-menu>true</show-in-menu>
+ <group-name/>
+ <menu-path>tools_menu.end</menu-path>
+ <interpreter>python</interpreter>
+ <dsl-interpreter-name/>
+ <text>
+# Cell Hierarchy Viewer - Python Version
+# Shows cell hierarchy tree with instance counts
+
+import pya
+
+class CellHierarchyDialog(pya.QDialog):
+    def __init__(self, view, parent=None):
+        super(CellHierarchyDialog, self).__init__(parent)
+        
+        self.view = view
+        
+        self.setWindowTitle("Cell Hierarchy")
+        self.setMinimumWidth(500)
+        self.setMinimumHeight(600)
+        
+        self.setup_ui()
+        self.build_tree()
+    
+    def setup_ui(self):
+        layout = pya.QVBoxLayout(self)
+        
+        # Search
+        search_layout = pya.QHBoxLayout()
+        search_layout.addWidget(pya.QLabel("Search:", self))
+        self.search_edit = pya.QLineEdit(self)
+        self.search_edit.setPlaceholderText("Filter cells...")
+        self.search_edit.textChanged(self.filter_tree)
+        search_layout.addWidget(self.search_edit)
+        layout.addLayout(search_layout)
+        
+        # Tree
+        self.tree = pya.QTreeWidget(self)
+        self.tree.setHeaderLabels(["Cell", "Instances", "Shapes"])
+        self.tree.itemDoubleClicked(self.goto_cell)
+        layout.addWidget(self.tree)
+        
+        # Info
+        self.info_label = pya.QLabel("", self)
+        layout.addWidget(self.info_label)
+        
+        # Buttons
+        btn_layout = pya.QHBoxLayout()
+        
+        self.goto_btn = pya.QPushButton("Go to Cell", self)
+        self.goto_btn.clicked(self.goto_selected)
+        btn_layout.addWidget(self.goto_btn)
+        
+        self.expand_btn = pya.QPushButton("Expand All", self)
+        self.expand_btn.clicked(lambda: self.tree.expandAll())
+        btn_layout.addWidget(self.expand_btn)
+        
+        self.collapse_btn = pya.QPushButton("Collapse All", self)
+        self.collapse_btn.clicked(lambda: self.tree.collapseAll())
+        btn_layout.addWidget(self.collapse_btn)
+        
+        self.close_btn = pya.QPushButton("Close", self)
+        self.close_btn.clicked(self.accept)
+        btn_layout.addWidget(self.close_btn)
+        
+        layout.addLayout(btn_layout)
+    
+    def build_tree(self):
+        self.tree.clear()
+        
+        if not self.view or not self.view.cellview(0):
+            return
+        
+        cv = self.view.cellview(0)
+        layout = cv.layout()
+        top_cell = cv.cell
+        
+        if not top_cell:
+            return
+        
+        self.cell_items = {}
+        total_cells = 0
+        total_instances = 0
+        
+        def add_cell(cell, parent_item=None):
+            nonlocal total_cells, total_instances
+            
+            # Count shapes
+            shape_count = 0
+            for layer_idx in layout.layer_indices():
+                for shape in cell.each_shape(layer_idx):
+                    shape_count += 1
+            
+            # Count instances
+            inst_count = cell.child_instances()
+            
+            if parent_item:
+                item = pya.QTreeWidgetItem(parent_item)
+            else:
+                item = pya.QTreeWidgetItem(self.tree)
+            
+            item.setText(0, cell.name)
+            item.setText(1, str(inst_count))
+            item.setText(2, str(shape_count))
+            item.setData(0, pya.Qt.UserRole, cell.cell_index())
+            
+            self.cell_items[cell.cell_index()] = item
+            total_cells += 1
+            total_instances += inst_count
+            
+            # Add children
+            for inst in cell.each_inst():
+                child_cell = inst.cell
+                if child_cell.cell_index() not in self.cell_items:
+                    add_cell(child_cell, item)
+        
+        add_cell(top_cell)
+        
+        self.tree.expandToDepth(1)
+        self.info_label.setText(f"Total: {total_cells} cells, {total_instances} instances")
+    
+    def filter_tree(self, text):
+        text_lower = text.lower()
+        
+        def set_visible(item, visible):
+            item.setHidden(not visible)
+            for i in range(item.childCount()):
+                child = item.child(i)
+                child_visible = text_lower in child.text(0).lower() if text else True
+                set_visible(child, child_visible or visible)
+        
+        for i in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(i)
+            visible = text_lower in item.text(0).lower() if text else True
+            set_visible(item, visible)
+    
+    def goto_selected(self):
+        items = self.tree.selectedItems()
+        if items:
+            self.goto_cell(items[0], 0)
+    
+    def goto_cell(self, item, column):
+        cell_idx = item.data(0, pya.Qt.UserRole)
+        if cell_idx is not None:
+            cv = self.view.cellview(0)
+            layout = cv.layout()
+            cell = layout.cell(cell_idx)
+            if cell:
+                cv.cell = cell
+                self.view.zoom_fit()
+
+
+# Run
+app = pya.Application.instance()
+mw = app.main_window()
+view = mw.current_view()
+
+if view:
+    dialog = CellHierarchyDialog(view, mw)
+    dialog.exec_()
+else:
+    pya.MessageBox.warning("No View", "Please open a layout first.", pya.MessageBox.Ok)
+</text>
+</klayout-macro>
