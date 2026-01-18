@@ -9,6 +9,8 @@
 # Keyboard Shortcuts:
 #   N     - Next layer
 #   P     - Previous layer  
+#   K     - Keep/pin current layer (stays visible while browsing)
+#   C     - Clear all kept/pinned layers
 #   A     - Show all layers
 #   I     - Toggle isolate mode
 #   Home  - Jump to first layer
@@ -30,6 +32,7 @@ module LayerBrowser
       @original_visibility = {}
       @isolate_mode = true
       @filtered_indices = []
+      @kept_layers = []  # Array of layer indices that are "pinned"
       
       self.windowTitle = "PDK Layer Browser"
       self.setMinimumWidth(450)
@@ -121,6 +124,27 @@ module LayerBrowser
       options_layout.addWidget(@zoom_checkbox)
       
       main_layout.addWidget(options_group)
+      
+      # Kept/Pinned layers group
+      kept_group = RBA::QGroupBox.new("Kept Layers (K to add, C to clear)", self)
+      kept_layout = RBA::QVBoxLayout.new(kept_group)
+      
+      @kept_list = RBA::QListWidget.new(self)
+      @kept_list.setMaximumHeight(80)
+      @kept_list.itemDoubleClicked { |item| remove_kept_layer_by_item(item) }
+      kept_layout.addWidget(@kept_list)
+      
+      kept_btn_layout = RBA::QHBoxLayout.new
+      @keep_btn = RBA::QPushButton.new("Keep Current (K)", self)
+      @keep_btn.clicked { keep_current_layer }
+      kept_btn_layout.addWidget(@keep_btn)
+      
+      @clear_kept_btn = RBA::QPushButton.new("Clear All (C)", self)
+      @clear_kept_btn.clicked { clear_kept_layers }
+      kept_btn_layout.addWidget(@clear_kept_btn)
+      
+      kept_layout.addLayout(kept_btn_layout)
+      main_layout.addWidget(kept_group)
       
       # Action buttons
       btn_layout = RBA::QHBoxLayout.new
@@ -288,6 +312,7 @@ module LayerBrowser
     def isolate_current_layer
       return if @layers.empty?
       
+      # Hide all layers first
       iter = @view.begin_layers
       while !iter.at_end?
         lp = iter.current
@@ -295,8 +320,76 @@ module LayerBrowser
         iter.next
       end
       
+      # Show current layer
       layer = @layers[@current_layer_index]
       layer[:layer_prop].visible = true
+      
+      # Also show all kept/pinned layers
+      @kept_layers.each do |kept_idx|
+        if kept_idx >= 0 && kept_idx < @layers.length
+          @layers[kept_idx][:layer_prop].visible = true
+        end
+      end
+    end
+
+    def keep_current_layer
+      return if @layers.empty?
+      
+      # Don't add duplicates
+      unless @kept_layers.include?(@current_layer_index)
+        @kept_layers << @current_layer_index
+        update_kept_list
+        
+        layer = @layers[@current_layer_index]
+        @status_label.text = "Kept layer: #{layer[:name]} (#{@kept_layers.length} pinned)"
+      else
+        @status_label.text = "Layer already kept"
+      end
+      
+      # Make sure the kept layer is visible
+      if @isolate_mode
+        isolate_current_layer
+      end
+    end
+
+    def clear_kept_layers
+      @kept_layers = []
+      update_kept_list
+      @status_label.text = "Cleared all kept layers"
+      
+      # Update display to reflect changes
+      if @isolate_mode
+        isolate_current_layer
+      end
+    end
+
+    def remove_kept_layer_by_item(item)
+      row = @kept_list.row(item)
+      return if row < 0 || row >= @kept_layers.length
+      
+      removed_idx = @kept_layers[row]
+      @kept_layers.delete_at(row)
+      update_kept_list
+      
+      if removed_idx < @layers.length
+        layer = @layers[removed_idx]
+        @status_label.text = "Removed kept layer: #{layer[:name]}"
+      end
+      
+      # Update display
+      if @isolate_mode
+        isolate_current_layer
+      end
+    end
+
+    def update_kept_list
+      @kept_list.clear
+      @kept_layers.each do |idx|
+        if idx >= 0 && idx < @layers.length
+          layer = @layers[idx]
+          @kept_list.addItem("#{idx}: #{layer[:name]}")
+        end
+      end
     end
 
     def show_all_layers
@@ -392,6 +485,10 @@ module LayerBrowser
         navigate_next
       when RBA::Qt::Key_P
         navigate_prev
+      when RBA::Qt::Key_K
+        keep_current_layer
+      when RBA::Qt::Key_C
+        clear_kept_layers
       when RBA::Qt::Key_A
         show_all_layers
       when RBA::Qt::Key_I

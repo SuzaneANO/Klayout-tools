@@ -72,6 +72,8 @@ Browse through all PDK layers one by one. Perfect for understanding layer stacku
 |-----|--------|
 | `N` | Next layer |
 | `P` | Previous layer |
+| `K` | Keep/pin current layer (stays visible while browsing) |
+| `C` | Clear all kept/pinned layers |
 | `A` | Show all layers |
 | `I` | Toggle isolate mode |
 | `Home` | Jump to first layer |
