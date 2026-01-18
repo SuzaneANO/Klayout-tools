@@ -13,23 +13,36 @@ A collection of useful KLayout macros and plugins for IC layout viewing and anal
 
 ## Installation
 
-### Option 1: Copy to KLayout Macros Folder
+### Windows (Easiest)
 
-Copy the contents of the `macros/` folder to your KLayout macros directory:
+**Option A: Double-click installer**
+1. Download or clone this repository
+2. Double-click `install.bat`
+3. Restart KLayout
 
-| OS | Path |
-|----|------|
-| **Linux** | `~/.klayout/macros/` |
-| **Windows** | `%APPDATA%\KLayout\macros\` |
-| **macOS** | `~/Library/Application Support/KLayout/macros/` |
+**Option B: PowerShell**
+```powershell
+.\install.ps1
+```
 
-### Option 2: Add as Package Path
+**Option C: Manual**
+1. Open File Explorer
+2. Type `%APPDATA%\KLayout\macros` in the address bar (press Enter)
+3. Create a new folder called `klayout-tools`
+4. Copy all `.rb` files from the `macros` folder into it
+5. Restart KLayout
 
-1. Open KLayout
-2. Go to **Tools → Manage Packages**
-3. Add this repository path
+### Linux / macOS
 
-### Option 3: Run Individual Macros
+```bash
+./install.sh
+```
+
+Or manually copy to:
+- **Linux:** `~/.klayout/macros/klayout-tools/`
+- **macOS:** `~/Library/Application Support/KLayout/macros/klayout-tools/`
+
+### Run Without Installing
 
 ```bash
 klayout design.gds -rm macros/layer_browser.rb
