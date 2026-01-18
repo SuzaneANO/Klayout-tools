@@ -213,12 +213,13 @@ end
 
 # Button handlers
 load_btn.clicked do
-  path = RBA::FileDialog.get_open_file_name(
+  path_val = RBA::FileDialog.get_open_file_name(
     "Load PDK Layer Map", 
     ".", 
     "Tech File (*.tech);;Layer Properties (*.lyp);;All (*)"
   )
   
+  path = path_val.to_s
   next if path.nil? || path.empty?
   
   begin

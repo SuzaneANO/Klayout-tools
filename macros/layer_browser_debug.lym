@@ -27,9 +27,11 @@ path = RBA::FileDialog.get_open_file_name(
   "Tech File (*.tech);;Layer Properties (*.lyp);;All (*)"
 )
 
-if path.nil? || path.empty?
+path_str = path.to_s
+if path_str.nil? || path_str.empty?
   RBA::MessageBox.info("Cancelled", "No file selected", RBA::MessageBox::Ok)
 else
+  path = path_str
   RBA::MessageBox.info("Step 1", "Selected file:\n#{path}\n\nFile exists: #{File.exist?(path)}", RBA::MessageBox::Ok)
   
   begin
