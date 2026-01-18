@@ -2,6 +2,14 @@
 
 A collection of useful KLayout macros and plugins for IC layout viewing and analysis, particularly useful for PDK exploration and ASIC/FPGA design workflows.
 
+## Demo
+
+### Layer Browser in Action
+
+https://github.com/user-attachments/assets/layer-browser-demo.mp4
+
+*Browsing through SKY130 PDK layers on a PLL Controller design*
+
 ## Features
 
 - **Layer Browser** - Navigate through PDK layers one by one with isolation mode
