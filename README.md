@@ -6,9 +6,7 @@ A collection of useful KLayout macros and plugins for IC layout viewing and anal
 
 ### Layer Browser in Action
 
-https://github.com/user-attachments/assets/layer-browser-demo.mp4
-
-*Browsing through SKY130 PDK layers on a PLL Controller design*
+[**Watch Demo Video**](https://github.com/SuzaneANO/Klayout-tools/releases/download/v1.0.0/layer_browser_demo.mp4) - Browsing through SKY130 PDK layers on a PLL Controller design
 
 ## Features
 
