@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <klayout-macro>
- <description>PDK Layer Browser with Keep/Pin feature</description>
- <version>1.1</version>
+ <description>PDK Layer Browser with Keep/Pin and Layer Map support</description>
+ <version>1.2</version>
  <category/>
  <prolog/>
  <epilog/>
@@ -19,6 +19,7 @@
 # KLayout Layer Browser
 # 
 # Browse through PDK layers one by one with isolation mode.
+# Supports loading PDK layer maps (.lyp files) for proper layer names.
 # 
 # Author: Adam Sbane
 # License: MIT
@@ -30,6 +31,7 @@
 #   C     - Clear all kept/pinned layers
 #   A     - Show all layers
 #   I     - Toggle isolate mode
+#   L     - Load PDK layer map (.lyp file)
 #   Home  - Jump to first layer
 #   End   - Jump to last layer
 
@@ -47,11 +49,13 @@ module LayerBrowser
       @original_visibility = {}
       @isolate_mode = true
       @filtered_indices = []
-      @kept_layers = []  # Array of layer indices that are "pinned"
+      @kept_layers = []
+      @layer_map = {}
+      @lyp_file = nil
       
       self.windowTitle = "PDK Layer Browser"
-      self.setMinimumWidth(450)
-      self.setMinimumHeight(600)
+      self.setMinimumWidth(500)
+      self.setMinimumHeight(700)
       
       setup_ui
       refresh_layers
@@ -109,7 +113,6 @@ module LayerBrowser
       list_group = RBA::QGroupBox.new("All Layers", self)
       list_layout = RBA::QVBoxLayout.new(list_group)
       
-      # Search box
       search_layout = RBA::QHBoxLayout.new
       search_label = RBA::QLabel.new("Search:", self)
       search_layout.addWidget(search_label)
@@ -140,6 +143,30 @@ module LayerBrowser
       
       main_layout.addWidget(options_group)
       
+      # PDK Layer Map group
+      pdk_group = RBA::QGroupBox.new("PDK Layer Map", self)
+      pdk_layout = RBA::QVBoxLayout.new(pdk_group)
+      
+      @lyp_label = RBA::QLabel.new("No layer map loaded", self)
+      @lyp_label.setStyleSheet("color: gray;")
+      pdk_layout.addWidget(@lyp_label)
+      
+      pdk_btn_layout = RBA::QHBoxLayout.new
+      @load_lyp_btn = RBA::QPushButton.new("Load Map (L)", self)
+      @load_lyp_btn.clicked { load_layer_map }
+      pdk_btn_layout.addWidget(@load_lyp_btn)
+      
+      @auto_detect_btn = RBA::QPushButton.new("Auto-Detect", self)
+      @auto_detect_btn.clicked { auto_detect_layer_map }
+      pdk_btn_layout.addWidget(@auto_detect_btn)
+      
+      @clear_lyp_btn = RBA::QPushButton.new("Clear", self)
+      @clear_lyp_btn.clicked { clear_layer_map }
+      pdk_btn_layout.addWidget(@clear_lyp_btn)
+      
+      pdk_layout.addLayout(pdk_btn_layout)
+      main_layout.addWidget(pdk_group)
+      
       # Kept/Pinned layers group
       kept_group = RBA::QGroupBox.new("Kept Layers (K to add, C to clear)", self)
       kept_layout = RBA::QVBoxLayout.new(kept_group)
@@ -167,10 +194,6 @@ module LayerBrowser
       @show_all_btn = RBA::QPushButton.new("Show All (A)", self)
       @show_all_btn.clicked { show_all_layers }
       btn_layout.addWidget(@show_all_btn)
-      
-      @export_btn = RBA::QPushButton.new("Export List", self)
-      @export_btn.clicked { export_layer_list }
-      btn_layout.addWidget(@export_btn)
       
       @refresh_btn = RBA::QPushButton.new("Refresh", self)
       @refresh_btn.clicked { refresh_layers; update_display }
@@ -201,13 +224,27 @@ module LayerBrowser
       while !iter.at_end?
         lp = iter.current
         if lp.valid?
+          layer_num = lp.source_layer
+          datatype = lp.source_datatype
+          
+          pdk_name = get_pdk_layer_name(layer_num, datatype)
+          
+          if pdk_name
+            display_name = pdk_name
+          elsif !lp.name.empty?
+            display_name = lp.name
+          else
+            display_name = "#{lp.source}"
+          end
+          
           layer_info = {
             :iter =&gt; iter.dup,
             :layer_prop =&gt; lp,
             :source =&gt; lp.source,
-            :name =&gt; lp.name.empty? ? "#{lp.source}" : lp.name,
-            :layer =&gt; lp.source_layer,
-            :datatype =&gt; lp.source_datatype
+            :name =&gt; display_name,
+            :pdk_name =&gt; pdk_name,
+            :layer =&gt; layer_num,
+            :datatype =&gt; datatype
           }
           @layers &lt;&lt; layer_info
           @filtered_indices &lt;&lt; (@layers.length - 1)
@@ -220,7 +257,9 @@ module LayerBrowser
       max_val = [(@layers.length - 1), 0].max
       @layer_spin.setMaximum(max_val)
       @progress_bar.setMaximum(max_val)
-      @status_label.text = "Found #{@layers.length} layers"
+      
+      lyp_info = @lyp_file ? " (#{File.basename(@lyp_file)})" : ""
+      @status_label.text = "Found #{@layers.length} layers#{lyp_info}"
     end
 
     def populate_layer_list(filter_text = "")
@@ -256,25 +295,19 @@ module LayerBrowser
       end
     end
 
-    def restore_visibility_state
-      iter = @view.begin_layers
-      index = 0
-      while !iter.at_end?
-        lp = iter.current
-        if @original_visibility.key?(index)
-          lp.visible = @original_visibility[index]
-        end
-        iter.next
-        index += 1
-      end
-    end
-
     def update_display
       return if @layers.empty?
       
       layer = @layers[@current_layer_index]
       
-      @layer_name_label.text = layer[:name]
+      if layer[:pdk_name]
+        @layer_name_label.text = layer[:pdk_name]
+        @layer_name_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #4CAF50;")
+      else
+        @layer_name_label.text = layer[:name]
+        @layer_name_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #2196F3;")
+      end
+      
       @layer_info_label.text = "Layer: #{layer[:layer]} / Datatype: #{layer[:datatype]}"
       
       shape_count = count_shapes(layer[:layer], layer[:datatype])
@@ -296,8 +329,6 @@ module LayerBrowser
       if @zoom_checkbox.isChecked
         zoom_to_layer
       end
-      
-      @status_label.text = "Layer #{@current_layer_index + 1} of #{@layers.length}"
     end
 
     def select_list_item(layer_index)
@@ -327,7 +358,6 @@ module LayerBrowser
     def isolate_current_layer
       return if @layers.empty?
       
-      # Hide all layers first
       iter = @view.begin_layers
       while !iter.at_end?
         lp = iter.current
@@ -335,11 +365,9 @@ module LayerBrowser
         iter.next
       end
       
-      # Show current layer
       layer = @layers[@current_layer_index]
       layer[:layer_prop].visible = true
       
-      # Also show all kept/pinned layers
       @kept_layers.each do |kept_idx|
         if kept_idx &gt;= 0 &amp;&amp; kept_idx &lt; @layers.length
           @layers[kept_idx][:layer_prop].visible = true
@@ -350,18 +378,14 @@ module LayerBrowser
     def keep_current_layer
       return if @layers.empty?
       
-      # Don't add duplicates
       unless @kept_layers.include?(@current_layer_index)
         @kept_layers &lt;&lt; @current_layer_index
         update_kept_list
         
         layer = @layers[@current_layer_index]
-        @status_label.text = "Kept layer: #{layer[:name]} (#{@kept_layers.length} pinned)"
-      else
-        @status_label.text = "Layer already kept"
+        @status_label.text = "Kept: #{layer[:name]} (#{@kept_layers.length} pinned)"
       end
       
-      # Make sure the kept layer is visible
       if @isolate_mode
         isolate_current_layer
       end
@@ -372,7 +396,6 @@ module LayerBrowser
       update_kept_list
       @status_label.text = "Cleared all kept layers"
       
-      # Update display to reflect changes
       if @isolate_mode
         isolate_current_layer
       end
@@ -382,16 +405,9 @@ module LayerBrowser
       row = @kept_list.row(item)
       return if row &lt; 0 || row &gt;= @kept_layers.length
       
-      removed_idx = @kept_layers[row]
       @kept_layers.delete_at(row)
       update_kept_list
       
-      if removed_idx &lt; @layers.length
-        layer = @layers[removed_idx]
-        @status_label.text = "Removed kept layer: #{layer[:name]}"
-      end
-      
-      # Update display
       if @isolate_mode
         isolate_current_layer
       end
@@ -415,6 +431,114 @@ module LayerBrowser
         iter.next
       end
       @status_label.text = "All layers visible"
+    end
+
+    # PDK Layer Map functions
+    def load_layer_map
+      file_path = RBA::FileDialog.get_open_file_name(
+        "Load PDK Layer Map",
+        ".",
+        "Layer Properties (*.lyp);;All files (*)"
+      )
+      
+      return if file_path.nil? || file_path.empty?
+      
+      begin
+        parse_lyp_file(file_path)
+        @lyp_file = file_path
+        @lyp_label.text = "Loaded: #{File.basename(file_path)}"
+        @lyp_label.setStyleSheet("color: green; font-weight: bold;")
+        refresh_layers
+        update_display
+        @status_label.text = "Loaded #{@layer_map.length} layer definitions"
+      rescue =&gt; e
+        RBA::MessageBox.critical("Load Error", e.message, RBA::MessageBox::Ok)
+      end
+    end
+
+    def parse_lyp_file(file_path)
+      @layer_map = {}
+      
+      content = File.read(file_path)
+      
+      content.scan(/&lt;properties&gt;(.*?)&lt;\/properties&gt;/m) do |props|
+        prop_block = props[0]
+        
+        name_match = prop_block.match(/&lt;name&gt;(.*?)&lt;\/name&gt;/)
+        source_match = prop_block.match(/&lt;source&gt;(.*?)&lt;\/source&gt;/)
+        
+        if name_match &amp;&amp; source_match
+          name = name_match[1].strip
+          source = source_match[1].strip
+          
+          if source =~ /(\d+)\/(\d+)/
+            layer = $1.to_i
+            datatype = $2.to_i
+            key = "#{layer}/#{datatype}"
+            
+            layer_name = name.split(" - ").first.strip
+            
+            @layer_map[key] = {
+              :name =&gt; layer_name,
+              :layer =&gt; layer,
+              :datatype =&gt; datatype
+            }
+          end
+        end
+      end
+    end
+
+    def clear_layer_map
+      @layer_map = {}
+      @lyp_file = nil
+      @lyp_label.text = "No layer map loaded"
+      @lyp_label.setStyleSheet("color: gray;")
+      refresh_layers
+      update_display
+    end
+
+    def auto_detect_layer_map
+      search_paths = []
+      
+      if @view &amp;&amp; @view.cellview(0)
+        cv = @view.cellview(0)
+        if cv.filename &amp;&amp; !cv.filename.empty?
+          gds_dir = File.dirname(cv.filename)
+          search_paths &lt;&lt; gds_dir
+          search_paths &lt;&lt; File.join(gds_dir, "..")
+        end
+      end
+      
+      pdk_root = ENV['PDK_ROOT']
+      if pdk_root &amp;&amp; !pdk_root.empty?
+        search_paths &lt;&lt; File.join(pdk_root, "sky130A", "libs.tech", "klayout")
+      end
+      
+      found_lyp = nil
+      search_paths.each do |path|
+        next unless File.directory?(path)
+        Dir.glob(File.join(path, "*.lyp")).each do |lyp|
+          found_lyp = lyp
+          break
+        end
+        break if found_lyp
+      end
+      
+      if found_lyp
+        parse_lyp_file(found_lyp)
+        @lyp_file = found_lyp
+        @lyp_label.text = "Auto: #{File.basename(found_lyp)}"
+        @lyp_label.setStyleSheet("color: green; font-weight: bold;")
+        refresh_layers
+        update_display
+      else
+        RBA::MessageBox.info("Auto-Detect", "No .lyp file found. Use 'Load Map' to browse.", RBA::MessageBox::Ok)
+      end
+    end
+
+    def get_pdk_layer_name(layer, datatype)
+      key = "#{layer}/#{datatype}"
+      @layer_map.key?(key) ? @layer_map[key][:name] : nil
     end
 
     def zoom_to_layer
@@ -469,31 +593,6 @@ module LayerBrowser
       end
     end
 
-    def export_layer_list
-      return if @layers.empty?
-      
-      file_path = RBA::FileDialog.get_save_file_name(
-        "Export Layer List",
-        ".",
-        "CSV files (*.csv);;Text files (*.txt);;All files (*)"
-      )
-      
-      return if file_path.nil? || file_path.empty?
-      
-      begin
-        File.open(file_path, 'w') do |f|
-          f.puts "Index,Name,Layer,Datatype,Shapes"
-          @layers.each_with_index do |layer, i|
-            shape_count = count_shapes(layer[:layer], layer[:datatype])
-            f.puts "#{i},\"#{layer[:name]}\",#{layer[:layer]},#{layer[:datatype]},#{shape_count}"
-          end
-        end
-        @status_label.text = "Exported to #{file_path}"
-      rescue =&gt; e
-        RBA::MessageBox.critical("Export Error", e.message, RBA::MessageBox::Ok)
-      end
-    end
-
     def keyPressEvent(event)
       case event.key
       when RBA::Qt::Key_N
@@ -508,6 +607,8 @@ module LayerBrowser
         show_all_layers
       when RBA::Qt::Key_I
         @isolate_checkbox.setChecked(!@isolate_checkbox.isChecked)
+      when RBA::Qt::Key_L
+        load_layer_map
       when RBA::Qt::Key_Home
         jump_to_layer(0)
       when RBA::Qt::Key_End
@@ -515,10 +616,6 @@ module LayerBrowser
       else
         super(event)
       end
-    end
-
-    def closeEvent(event)
-      super(event)
     end
 
   end

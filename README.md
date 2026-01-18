@@ -107,8 +107,16 @@ Browse through all PDK layers one by one. Perfect for understanding layer stacku
 | `C` | Clear all kept/pinned layers |
 | `A` | Show all layers |
 | `I` | Toggle isolate mode |
+| `L` | Load PDK layer map (.lyp file) |
 | `Home` | Jump to first layer |
 | `End` | Jump to last layer |
+
+**PDK Layer Map Support:**
+- Load `.lyp` files to see proper PDK layer names (e.g., "li1.drawing" instead of "67/20")
+- Click "Load Map" or press `L` to browse for a layer map file
+- Click "Auto-Detect" to automatically find `.lyp` files in common locations
+- Layer names from the PDK are shown in green for easy identification
+- Works with SKY130, GF180MCU, and other PDKs that provide `.lyp` files
 
 ### Layer Statistics (`macros/layer_stats.rb`)
 

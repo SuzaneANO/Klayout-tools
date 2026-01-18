@@ -13,8 +13,16 @@
 #   C     - Clear all kept/pinned layers
 #   A     - Show all layers
 #   I     - Toggle isolate mode
+#   L     - Load PDK layer map (.lyp file)
 #   Home  - Jump to first layer
 #   End   - Jump to last layer
+#
+# PDK Layer Map Support:
+#   The browser can load .lyp (KLayout layer properties) files to show
+#   proper PDK layer names. Common PDK layer maps:
+#   - SKY130: sky130.lyp
+#   - GF180MCU: gf180mcu.lyp
+#   Click "Load Layer Map" or press L to load a .lyp file.
 
 unless $klayout_layer_browser_loaded
 
@@ -33,10 +41,12 @@ module LayerBrowser
       @isolate_mode = true
       @filtered_indices = []
       @kept_layers = []  # Array of layer indices that are "pinned"
+      @layer_map = {}    # Hash mapping "layer/datatype" to PDK layer name
+      @lyp_file = nil    # Currently loaded .lyp file
       
       self.windowTitle = "PDK Layer Browser"
-      self.setMinimumWidth(450)
-      self.setMinimumHeight(550)
+      self.setMinimumWidth(500)
+      self.setMinimumHeight(650)
       
       setup_ui
       refresh_layers
@@ -125,6 +135,30 @@ module LayerBrowser
       
       main_layout.addWidget(options_group)
       
+      # PDK Layer Map group
+      pdk_group = RBA::QGroupBox.new("PDK Layer Map", self)
+      pdk_layout = RBA::QVBoxLayout.new(pdk_group)
+      
+      @lyp_label = RBA::QLabel.new("No layer map loaded", self)
+      @lyp_label.setStyleSheet("color: gray;")
+      pdk_layout.addWidget(@lyp_label)
+      
+      pdk_btn_layout = RBA::QHBoxLayout.new
+      @load_lyp_btn = RBA::QPushButton.new("Load Layer Map (L)", self)
+      @load_lyp_btn.clicked { load_layer_map }
+      pdk_btn_layout.addWidget(@load_lyp_btn)
+      
+      @clear_lyp_btn = RBA::QPushButton.new("Clear", self)
+      @clear_lyp_btn.clicked { clear_layer_map }
+      pdk_btn_layout.addWidget(@clear_lyp_btn)
+      
+      @auto_detect_btn = RBA::QPushButton.new("Auto-Detect", self)
+      @auto_detect_btn.clicked { auto_detect_layer_map }
+      pdk_btn_layout.addWidget(@auto_detect_btn)
+      
+      pdk_layout.addLayout(pdk_btn_layout)
+      main_layout.addWidget(pdk_group)
+      
       # Kept/Pinned layers group
       kept_group = RBA::QGroupBox.new("Kept Layers (K to add, C to clear)", self)
       kept_layout = RBA::QVBoxLayout.new(kept_group)
@@ -186,13 +220,30 @@ module LayerBrowser
       while !iter.at_end?
         lp = iter.current
         if lp.valid?
+          layer_num = lp.source_layer
+          datatype = lp.source_datatype
+          
+          # Try to get PDK layer name from loaded layer map
+          pdk_name = get_pdk_layer_name(layer_num, datatype)
+          
+          # Determine display name
+          if pdk_name
+            display_name = pdk_name
+          elsif !lp.name.empty?
+            display_name = lp.name
+          else
+            display_name = "#{lp.source}"
+          end
+          
           layer_info = {
             :iter => iter.dup,
             :layer_prop => lp,
             :source => lp.source,
-            :name => lp.name.empty? ? "#{lp.source}" : lp.name,
-            :layer => lp.source_layer,
-            :datatype => lp.source_datatype
+            :name => display_name,
+            :pdk_name => pdk_name,
+            :original_name => lp.name,
+            :layer => layer_num,
+            :datatype => datatype
           }
           @layers << layer_info
           @filtered_indices << (@layers.length - 1)
@@ -205,7 +256,9 @@ module LayerBrowser
       max_val = [(@layers.length - 1), 0].max
       @layer_spin.setMaximum(max_val)
       @progress_bar.setMaximum(max_val)
-      @status_label.text = "Found #{@layers.length} layers"
+      
+      lyp_info = @lyp_file ? " (#{File.basename(@lyp_file)})" : ""
+      @status_label.text = "Found #{@layers.length} layers#{lyp_info}"
     end
 
     def populate_layer_list(filter_text = "")
@@ -259,7 +312,15 @@ module LayerBrowser
       
       layer = @layers[@current_layer_index]
       
-      @layer_name_label.text = layer[:name]
+      # Show PDK name prominently if available
+      if layer[:pdk_name]
+        @layer_name_label.text = layer[:pdk_name]
+        @layer_name_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #4CAF50;")
+      else
+        @layer_name_label.text = layer[:name]
+        @layer_name_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #2196F3;")
+      end
+      
       @layer_info_label.text = "Layer: #{layer[:layer]} / Datatype: #{layer[:datatype]}"
       
       shape_count = count_shapes(layer[:layer], layer[:datatype])
@@ -282,7 +343,8 @@ module LayerBrowser
         zoom_to_layer
       end
       
-      @status_label.text = "Layer #{@current_layer_index + 1} of #{@layers.length}"
+      lyp_info = @lyp_file ? " [#{File.basename(@lyp_file)}]" : ""
+      @status_label.text = "Layer #{@current_layer_index + 1} of #{@layers.length}#{lyp_info}"
     end
 
     def select_list_item(layer_index)
@@ -402,6 +464,143 @@ module LayerBrowser
       @status_label.text = "All layers visible"
     end
 
+    # PDK Layer Map functions
+    def load_layer_map
+      file_path = RBA::FileDialog.get_open_file_name(
+        "Load PDK Layer Map",
+        ".",
+        "Layer Properties (*.lyp);;All files (*)"
+      )
+      
+      return if file_path.nil? || file_path.empty?
+      
+      begin
+        parse_lyp_file(file_path)
+        @lyp_file = file_path
+        @lyp_label.text = "Loaded: #{File.basename(file_path)}"
+        @lyp_label.setStyleSheet("color: green; font-weight: bold;")
+        refresh_layers
+        update_display
+        @status_label.text = "Loaded #{@layer_map.length} layer definitions from #{File.basename(file_path)}"
+      rescue => e
+        RBA::MessageBox.critical("Load Error", "Failed to load layer map: #{e.message}", RBA::MessageBox::Ok)
+      end
+    end
+
+    def parse_lyp_file(file_path)
+      @layer_map = {}
+      
+      content = File.read(file_path)
+      
+      # Parse XML to extract layer names and sources
+      # Format: <name>layername - layer/datatype</name> and <source>layer/datatype@1</source>
+      content.scan(/<properties>(.*?)<\/properties>/m) do |props|
+        prop_block = props[0]
+        
+        # Extract name
+        name_match = prop_block.match(/<name>(.*?)<\/name>/)
+        source_match = prop_block.match(/<source>(.*?)<\/source>/)
+        
+        if name_match && source_match
+          name = name_match[1].strip
+          source = source_match[1].strip
+          
+          # Parse source: "64/44@1" -> "64/44"
+          if source =~ /(\d+)\/(\d+)/
+            layer = $1.to_i
+            datatype = $2.to_i
+            key = "#{layer}/#{datatype}"
+            
+            # Extract just the layer name part (before " - ")
+            layer_name = name.split(" - ").first.strip
+            
+            @layer_map[key] = {
+              :name => layer_name,
+              :full_name => name,
+              :layer => layer,
+              :datatype => datatype
+            }
+          end
+        end
+      end
+    end
+
+    def clear_layer_map
+      @layer_map = {}
+      @lyp_file = nil
+      @lyp_label.text = "No layer map loaded"
+      @lyp_label.setStyleSheet("color: gray;")
+      refresh_layers
+      update_display
+      @status_label.text = "Layer map cleared"
+    end
+
+    def auto_detect_layer_map
+      # Try to find .lyp file in common locations
+      search_paths = []
+      
+      # Check if there's a .lyp file in the same directory as the GDS
+      if @view && @view.cellview(0)
+        cv = @view.cellview(0)
+        if cv.filename && !cv.filename.empty?
+          gds_dir = File.dirname(cv.filename)
+          search_paths << gds_dir
+          search_paths << File.join(gds_dir, "..")
+          search_paths << File.join(gds_dir, "..", "results", "signoff")
+        end
+      end
+      
+      # Check PDK_ROOT environment variable
+      pdk_root = ENV['PDK_ROOT']
+      if pdk_root && !pdk_root.empty?
+        search_paths << File.join(pdk_root, "sky130A", "libs.tech", "klayout")
+        search_paths << File.join(pdk_root, "gf180mcuC", "libs.tech", "klayout")
+      end
+      
+      # Search for .lyp files
+      found_lyp = nil
+      search_paths.each do |path|
+        next unless File.directory?(path)
+        Dir.glob(File.join(path, "*.lyp")).each do |lyp|
+          found_lyp = lyp
+          break
+        end
+        break if found_lyp
+      end
+      
+      if found_lyp
+        begin
+          parse_lyp_file(found_lyp)
+          @lyp_file = found_lyp
+          @lyp_label.text = "Auto-detected: #{File.basename(found_lyp)}"
+          @lyp_label.setStyleSheet("color: green; font-weight: bold;")
+          refresh_layers
+          update_display
+          @status_label.text = "Auto-detected #{@layer_map.length} layers from #{File.basename(found_lyp)}"
+        rescue => e
+          @status_label.text = "Auto-detect failed: #{e.message}"
+        end
+      else
+        @status_label.text = "No .lyp file found. Use 'Load Layer Map' to browse."
+        RBA::MessageBox.info("Auto-Detect", 
+          "No .lyp file found automatically.\n\n" +
+          "Please use 'Load Layer Map' to manually select a .lyp file.\n\n" +
+          "Common locations:\n" +
+          "- Same folder as your GDS file\n" +
+          "- PDK libs.tech/klayout folder\n" +
+          "- OpenLane run results/signoff folder",
+          RBA::MessageBox::Ok)
+      end
+    end
+
+    def get_pdk_layer_name(layer, datatype)
+      key = "#{layer}/#{datatype}"
+      if @layer_map.key?(key)
+        return @layer_map[key][:name]
+      end
+      nil
+    end
+
     def zoom_to_layer
       return if @layers.empty?
       
@@ -493,6 +692,8 @@ module LayerBrowser
         show_all_layers
       when RBA::Qt::Key_I
         @isolate_checkbox.setChecked(!@isolate_checkbox.isChecked)
+      when RBA::Qt::Key_L
+        load_layer_map
       when RBA::Qt::Key_Home
         jump_to_layer(0)
       when RBA::Qt::Key_End
