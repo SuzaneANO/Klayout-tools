@@ -466,18 +466,19 @@ module LayerBrowser
 
     # PDK Layer Map functions
     def load_layer_map
-      file_path = RBA::FileDialog.get_open_file_name(
+      file_path_val = RBA::FileDialog.get_open_file_name(
         "Load PDK Layer Map",
         ".",
         "Tech File (*.tech);;Layer Properties (*.lyp);;Layer Map (*.map);;All files (*)"
       )
       
+      file_path = file_path_val.to_s
       return if file_path.nil? || file_path.empty?
       
       begin
-        if file_path.end_with?(".tech")
+        if file_path.downcase.end_with?(".tech")
           parse_tech_file(file_path)
-        elsif file_path.end_with?(".map")
+        elsif file_path.downcase.end_with?(".map")
           parse_map_file(file_path)
         else
           parse_lyp_file(file_path)
@@ -668,9 +669,9 @@ module LayerBrowser
       
       if found_file
         begin
-          if found_file.end_with?(".tech")
+          if found_file.downcase.end_with?(".tech")
             parse_tech_file(found_file)
-          elsif found_file.end_with?(".map")
+          elsif found_file.downcase.end_with?(".map")
             parse_map_file(found_file)
           else
             parse_lyp_file(found_file)
@@ -760,12 +761,13 @@ module LayerBrowser
     def export_layer_list
       return if @layers.empty?
       
-      file_path = RBA::FileDialog.get_save_file_name(
+      file_path_val = RBA::FileDialog.get_save_file_name(
         "Export Layer List",
         ".",
         "CSV files (*.csv);;Text files (*.txt);;All files (*)"
       )
       
+      file_path = file_path_val.to_s
       return if file_path.nil? || file_path.empty?
       
       begin
