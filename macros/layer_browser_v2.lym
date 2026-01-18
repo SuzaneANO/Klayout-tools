@@ -129,32 +129,47 @@ class LayerBrowserV2 &lt; RBA::QDialog
   end
 
   def load_lyp
-    path = RBA::FileDialog.get_open_file_name("Load Layer Map", ".", "Layer Properties (*.lyp);;All (*)")
+    path = RBA::FileDialog.get_open_file_name("Load Layer Map", ".", "Tech File (*.tech);;Layer Properties (*.lyp);;All (*)")
     return if path.nil? || path.empty?
     
     begin
       @layer_map = {}
       content = File.read(path)
       
-      # Simple regex parsing
-      content.scan(/&lt;name&gt;([^&lt;]+)&lt;\/name&gt;/) do |name_match|
-        # This won't work well, need to pair with source
-      end
-      
-      # Better approach: find each properties block
-      content.scan(/&lt;properties&gt;(.*?)&lt;\/properties&gt;/m) do |block|
-        text = block[0]
-        name_m = text.match(/&lt;name&gt;([^&lt;]+)&lt;\/name&gt;/)
-        src_m = text.match(/&lt;source&gt;([^&lt;]+)&lt;\/source&gt;/)
-        
-        if name_m &amp;&amp; src_m
-          name = name_m[1].strip
-          src = src_m[1].strip
+      if path.end_with?(".tech")
+        # Parse Magic .tech file
+        cif_start = content.index('cifoutput')
+        if cif_start
+          cif_section = content[cif_start..-1]
+          current_layer = nil
           
-          if src =~ /(\d+)\/(\d+)/
-            key = "#{$1}/#{$2}"
-            layer_name = name.split(" - ").first.strip
-            @layer_map[key] = layer_name
+          cif_section.each_line do |line|
+            line = line.strip
+            if line =~ /^layer\s+(\w+)/
+              current_layer = $1
+            elsif line =~ /^calma\s+(\d+)\s+(\d+)/ &amp;&amp; current_layer
+              key = "#{$1}/#{$2}"
+              @layer_map[key] = current_layer
+              current_layer = nil
+            end
+          end
+        end
+      else
+        # Parse .lyp file
+        content.scan(/&lt;properties&gt;(.*?)&lt;\/properties&gt;/m) do |block|
+          text = block[0]
+          name_m = text.match(/&lt;name&gt;([^&lt;]+)&lt;\/name&gt;/)
+          src_m = text.match(/&lt;source&gt;([^&lt;]+)&lt;\/source&gt;/)
+          
+          if name_m &amp;&amp; src_m
+            name = name_m[1].strip
+            src = src_m[1].strip
+            
+            if src =~ /(\d+)\/(\d+)/
+              key = "#{$1}/#{$2}"
+              layer_name = name.split(" - ").first.strip
+              @layer_map[key] = layer_name
+            end
           end
         end
       end
@@ -166,10 +181,10 @@ class LayerBrowserV2 &lt; RBA::QDialog
       # Refresh to apply names
       refresh_layers
       
-      RBA::MessageBox.info("Loaded", "Loaded #{@layer_map.length} layer definitions", RBA::MessageBox::Ok)
+      RBA::MessageBox.info("Loaded", "Loaded #{@layer_map.length} layer definitions\n\nLayer 66/20 = #{@layer_map['66/20'] || 'NOT FOUND'}", RBA::MessageBox::Ok)
       
     rescue =&gt; e
-      RBA::MessageBox.critical("Error", "Failed: #{e.message}", RBA::MessageBox::Ok)
+      RBA::MessageBox.critical("Error", "Failed: #{e.message}\n#{e.backtrace.first(3).join("\n")}", RBA::MessageBox::Ok)
     end
   end
 

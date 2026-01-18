@@ -469,13 +469,15 @@ module LayerBrowser
       file_path = RBA::FileDialog.get_open_file_name(
         "Load PDK Layer Map",
         ".",
-        "Layer Properties (*.lyp);;Layer Map (*.map);;All files (*)"
+        "Tech File (*.tech);;Layer Properties (*.lyp);;Layer Map (*.map);;All files (*)"
       )
       
       return if file_path.nil? || file_path.empty?
       
       begin
-        if file_path.end_with?(".map")
+        if file_path.end_with?(".tech")
+          parse_tech_file(file_path)
+        elsif file_path.end_with?(".map")
           parse_map_file(file_path)
         else
           parse_lyp_file(file_path)
@@ -488,6 +490,45 @@ module LayerBrowser
         @status_label.text = "Loaded #{@layer_map.length} layer definitions from #{File.basename(file_path)}"
       rescue => e
         RBA::MessageBox.critical("Load Error", "Failed to load layer map: #{e.message}\n\n#{e.backtrace.first(3).join("\n")}", RBA::MessageBox::Ok)
+      end
+    end
+
+    def parse_tech_file(file_path)
+      # Parse Magic .tech file format (SKY130 style):
+      # Looks for "layer NAME" followed by "calma layer datatype"
+      @layer_map = {}
+      
+      content = File.read(file_path)
+      
+      # Find cifoutput section
+      cif_start = content.index('cifoutput')
+      return unless cif_start
+      
+      cif_section = content[cif_start..-1]
+      current_layer = nil
+      
+      cif_section.each_line do |line|
+        line = line.strip
+        
+        # Match "layer NAME ..." lines
+        if line =~ /^layer\s+(\w+)/
+          current_layer = $1
+          next
+        end
+        
+        # Match "calma layer datatype" lines
+        if line =~ /^calma\s+(\d+)\s+(\d+)/ && current_layer
+          layer_num = $1.to_i
+          datatype = $2.to_i
+          key = "#{layer_num}/#{datatype}"
+          
+          @layer_map[key] = {
+            :name => current_layer,
+            :layer => layer_num,
+            :datatype => datatype
+          }
+          current_layer = nil
+        end
       end
     end
 
@@ -598,19 +639,26 @@ module LayerBrowser
       home = ENV['HOME'] || ENV['USERPROFILE'] || "~"
       search_paths << File.join(home, ".volare", "volare", "sky130", "versions")
       
-      # Search for .lyp and .map files
+      # Search for .tech, .lyp and .map files
       found_file = nil
       search_paths.each do |path|
         next unless File.directory?(path)
         
-        # First try .lyp files
+        # First try .tech files (best layer names)
+        Dir.glob(File.join(path, "**", "*.tech")).each do |f|
+          found_file = f
+          break
+        end
+        break if found_file
+        
+        # Then try .lyp files
         Dir.glob(File.join(path, "**", "*.lyp")).each do |f|
           found_file = f
           break
         end
         break if found_file
         
-        # Then try .map files
+        # Finally try .map files
         Dir.glob(File.join(path, "**", "*.map")).each do |f|
           found_file = f
           break
@@ -620,7 +668,9 @@ module LayerBrowser
       
       if found_file
         begin
-          if found_file.end_with?(".map")
+          if found_file.end_with?(".tech")
+            parse_tech_file(found_file)
+          elsif found_file.end_with?(".map")
             parse_map_file(found_file)
           else
             parse_lyp_file(found_file)
